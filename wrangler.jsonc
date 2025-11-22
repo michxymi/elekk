@@ -14,7 +14,7 @@
 	"hyperdrive": [
 		{
 			"binding": "HYPERDRIVE",
-			"id": "<YOUR_DATABASE_ID>",
+			"id": "8dd2b1ba06f649f488a96cf194e51192",
 			"localConnectionString": "postgresql://postgres:test123@localhost:5432/elekk_test"
 		}
 	]
