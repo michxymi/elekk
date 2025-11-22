@@ -39,6 +39,47 @@ export async function getTableVersion(
 }
 
 /**
+ * Global schema version detection for entire database (~1-2ms latency)
+ *
+ * Returns an aggregate hash based on all table transaction IDs (xmin values) in the
+ * public schema. This value changes whenever ANY table is added, removed, or modified,
+ * making it suitable for invalidating the OpenAPI spec cache.
+ *
+ * @param connectionString - PostgreSQL connection string
+ * @returns Aggregate version string representing the entire schema state, or null if error occurs
+ * @example
+ * const version = await getSchemaVersion(connectionString);
+ * if (version !== cachedVersion) {
+ *   // Regenerate OpenAPI spec
+ * }
+ */
+export async function getSchemaVersion(
+  connectionString: string
+): Promise<string | null> {
+  const client = postgres(connectionString);
+  const db = drizzle(client);
+
+  try {
+    // Query all table xmin values and concatenate them into a single version string
+    // This changes whenever any table is added, removed, or modified
+    const result = await db.execute(sql`
+      SELECT string_agg(c.xmin::text, ',' ORDER BY c.relname) as schema_version
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public'
+        AND c.relkind = 'r'
+    `);
+
+    const schemaVersion = result[0]?.schema_version;
+    return typeof schemaVersion === "string" ? schemaVersion : null;
+  } catch (_error) {
+    return null;
+  } finally {
+    await client.end();
+  }
+}
+
+/**
  * Introspects column metadata for a single database table
  *
  * Queries information_schema to retrieve column names, data types, and nullability

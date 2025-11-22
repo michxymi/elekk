@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getEntireSchemaConfig,
+  getSchemaVersion,
   getTableConfig,
   getTableVersion,
 } from "@/lib/introspector";
@@ -120,6 +121,97 @@ describe("introspector", () => {
       await getTableVersion(TEST_CONNECTION_STRING, TEST_TABLE_NAMES.USERS);
 
       expect(mockClient.end).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe("getSchemaVersion", () => {
+    it("should return aggregate schema version for all tables", async () => {
+      const mockSchemaVersionResult = [{ schema_version: "12345,12346,12347" }];
+      mockDb.execute.mockResolvedValue(mockSchemaVersionResult);
+
+      const result = await getSchemaVersion(TEST_CONNECTION_STRING);
+
+      expect(result).toBe("12345,12346,12347");
+      expect(postgres).toHaveBeenCalledWith(TEST_CONNECTION_STRING);
+      expect(drizzle).toHaveBeenCalledWith(mockClient);
+      expect(mockDb.execute).toHaveBeenCalledOnce();
+      expect(mockClient.end).toHaveBeenCalledOnce();
+    });
+
+    it("should return null when no tables exist", async () => {
+      mockDb.execute.mockResolvedValue([]);
+
+      const result = await getSchemaVersion(TEST_CONNECTION_STRING);
+
+      expect(result).toBeNull();
+      expect(mockClient.end).toHaveBeenCalledOnce();
+    });
+
+    it("should return null when schema_version is not a string", async () => {
+      mockDb.execute.mockResolvedValue([{ schema_version: 12_345 }]);
+
+      const result = await getSchemaVersion(TEST_CONNECTION_STRING);
+
+      expect(result).toBeNull();
+      expect(mockClient.end).toHaveBeenCalledOnce();
+    });
+
+    it("should return null when schema_version is undefined", async () => {
+      mockDb.execute.mockResolvedValue([{ other_field: "value" }]);
+
+      const result = await getSchemaVersion(TEST_CONNECTION_STRING);
+
+      expect(result).toBeNull();
+      expect(mockClient.end).toHaveBeenCalledOnce();
+    });
+
+    it("should handle database errors gracefully", async () => {
+      mockDb.execute.mockRejectedValue(new Error("Connection failed"));
+
+      const result = await getSchemaVersion(TEST_CONNECTION_STRING);
+
+      expect(result).toBeNull();
+      expect(mockClient.end).toHaveBeenCalledOnce();
+    });
+
+    it("should close connection even when query succeeds", async () => {
+      const mockSchemaVersionResult = [{ schema_version: "12345,12346,12347" }];
+      mockDb.execute.mockResolvedValue(mockSchemaVersionResult);
+
+      await getSchemaVersion(TEST_CONNECTION_STRING);
+
+      expect(mockClient.end).toHaveBeenCalledOnce();
+    });
+
+    it("should close connection even when query fails", async () => {
+      mockDb.execute.mockRejectedValue(new Error("Query failed"));
+
+      await getSchemaVersion(TEST_CONNECTION_STRING);
+
+      expect(mockClient.end).toHaveBeenCalledOnce();
+    });
+
+    it("should return different version when schema changes", async () => {
+      // First call - original schema
+      const mockVersionResult1 = [{ schema_version: "12345,12346" }];
+      mockDb.execute.mockResolvedValueOnce(mockVersionResult1);
+
+      const result1 = await getSchemaVersion(TEST_CONNECTION_STRING);
+      expect(result1).toBe("12345,12346");
+
+      // Reset mocks for second call
+      mockClient = createMockPostgresClient();
+      mockDb = createMockDrizzleDb();
+      vi.mocked(postgres).mockReturnValue(mockClient as never);
+      vi.mocked(drizzle).mockReturnValue(mockDb as never);
+
+      // Second call - schema changed (table added or modified)
+      const mockVersionResult2 = [{ schema_version: "12345,12346,12347" }];
+      mockDb.execute.mockResolvedValueOnce(mockVersionResult2);
+
+      const result2 = await getSchemaVersion(TEST_CONNECTION_STRING);
+      expect(result2).toBe("12345,12346,12347");
+      expect(result2).not.toBe(result1);
     });
   });
 

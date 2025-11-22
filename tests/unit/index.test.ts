@@ -12,6 +12,8 @@ import { createMockHyperdrive } from "../setup/mocks";
 vi.mock("@/lib/introspector", () => ({
   getTableVersion: vi.fn(),
   getTableConfig: vi.fn(),
+  getSchemaVersion: vi.fn(),
+  getEntireSchemaConfig: vi.fn(),
 }));
 
 vi.mock("@/lib/builder", () => ({
@@ -25,7 +27,12 @@ vi.mock("@/lib/generator", () => ({
 // Import mocked modules
 import { buildRuntimeSchema } from "@/lib/builder";
 import { createCrudRouter } from "@/lib/generator";
-import { getTableConfig, getTableVersion } from "@/lib/introspector";
+import {
+  getEntireSchemaConfig,
+  getSchemaVersion,
+  getTableConfig,
+  getTableVersion,
+} from "@/lib/introspector";
 
 describe("Main Application (index.ts)", () => {
   const mockEnv = {
@@ -452,8 +459,22 @@ describe("Main Application (index.ts)", () => {
   });
 
   describe("OpenAPI Documentation Endpoints", () => {
-    it("should serve OpenAPI spec at /doc", async () => {
-      const req = new Request("http://localhost/doc", {
+    it("should serve OpenAPI spec at /openapi.json", async () => {
+      vi.mocked(getSchemaVersion).mockResolvedValue("schema-v1");
+      vi.mocked(getEntireSchemaConfig).mockResolvedValue({
+        users: USERS_TABLE_COLUMNS,
+      });
+      vi.mocked(buildRuntimeSchema).mockReturnValue({
+        table: {},
+        zodSchema: {} as never,
+      });
+      const mockRouter = {
+        routes: [],
+        fetch: vi.fn(),
+      };
+      vi.mocked(createCrudRouter).mockReturnValue(mockRouter as never);
+
+      const req = new Request("http://localhost/openapi.json", {
         method: "GET",
       });
 
@@ -463,11 +484,13 @@ describe("Main Application (index.ts)", () => {
       const body = (await res.json()) as Record<string, unknown>;
       expect(body).toHaveProperty("openapi");
       expect(body).toHaveProperty("info");
-      expect((body.info as Record<string, unknown>).title).toBe("Auto-API");
+      expect((body.info as Record<string, unknown>).title).toBe(
+        "Elekk Auto-API"
+      );
     });
 
-    it("should serve Swagger UI at /ui", async () => {
-      const req = new Request("http://localhost/ui", {
+    it("should serve Swagger UI at /docs", async () => {
+      const req = new Request("http://localhost/docs", {
         method: "GET",
       });
 
@@ -555,6 +578,185 @@ describe("Main Application (index.ts)", () => {
         alternativeConnectionString,
         "users"
       );
+    });
+  });
+
+  describe("OpenAPI Spec Generation", () => {
+    it("should call appropriate functions when generating OpenAPI spec", async () => {
+      const mockSchemaConfig = {
+        users: USERS_TABLE_COLUMNS,
+        posts: [
+          { name: "id", type: "integer", nullable: false },
+          { name: "title", type: "text", nullable: false },
+        ],
+      };
+
+      // Use unique version to avoid cache collision with other tests
+      vi.mocked(getSchemaVersion).mockResolvedValue("unique-function-test-v1");
+      vi.mocked(getEntireSchemaConfig).mockResolvedValue(mockSchemaConfig);
+      vi.mocked(buildRuntimeSchema).mockReturnValue({
+        table: {},
+        zodSchema: {} as never,
+      });
+      // Mock router that has the necessary Hono structure
+      const mockRouter = {
+        routes: [],
+        fetch: vi.fn(),
+      };
+      vi.mocked(createCrudRouter).mockReturnValue(mockRouter as never);
+
+      const req = new Request("http://localhost/openapi.json", {
+        method: "GET",
+      });
+
+      const res = await app.fetch(req, mockEnv as never);
+
+      expect(res.status).toBe(200);
+
+      // Verify functions were called with correct arguments
+      expect(getSchemaVersion).toHaveBeenCalledWith(TEST_CONNECTION_STRING);
+      // Check that the function was called at least once (may be called by previous tests too)
+      expect(getSchemaVersion).toHaveBeenCalled();
+      expect(getEntireSchemaConfig).toHaveBeenCalled();
+      expect(buildRuntimeSchema).toHaveBeenCalled();
+      expect(createCrudRouter).toHaveBeenCalled();
+    });
+
+    it("should cache OpenAPI spec on subsequent requests with same version", async () => {
+      const mockSchemaConfig = {
+        users: USERS_TABLE_COLUMNS,
+      };
+
+      // Set up mocks to return consistent version
+      vi.mocked(getSchemaVersion).mockResolvedValue("cache-test-v1");
+      vi.mocked(getEntireSchemaConfig).mockResolvedValue(mockSchemaConfig);
+      vi.mocked(buildRuntimeSchema).mockReturnValue({
+        table: {},
+        zodSchema: {} as never,
+      });
+      const mockRouter = {
+        routes: [],
+        fetch: vi.fn(),
+      };
+      vi.mocked(createCrudRouter).mockReturnValue(mockRouter as never);
+
+      // First request - should introspect
+      const req1 = new Request("http://localhost/openapi.json", {
+        method: "GET",
+      });
+      const res1 = await app.fetch(req1, mockEnv as never);
+      expect(res1.status).toBe(200);
+
+      const callCountAfterFirst = vi.mocked(getEntireSchemaConfig).mock.calls
+        .length;
+      expect(callCountAfterFirst).toBeGreaterThan(0);
+
+      // Second request with same version - should use cache
+      const req2 = new Request("http://localhost/openapi.json", {
+        method: "GET",
+      });
+      const res2 = await app.fetch(req2, mockEnv as never);
+      expect(res2.status).toBe(200);
+
+      // getSchemaVersion called again, but getEntireSchemaConfig should not be
+      const callCountAfterSecond = vi.mocked(getEntireSchemaConfig).mock.calls
+        .length;
+      expect(callCountAfterSecond).toBe(callCountAfterFirst); // No additional calls
+    });
+
+    it("should invalidate cache when schema version changes", async () => {
+      const mockSchemaConfig = {
+        users: USERS_TABLE_COLUMNS,
+      };
+
+      // First request with version 1
+      vi.mocked(getSchemaVersion).mockResolvedValueOnce("invalidate-test-v1");
+      vi.mocked(getEntireSchemaConfig).mockResolvedValue(mockSchemaConfig);
+      vi.mocked(buildRuntimeSchema).mockReturnValue({
+        table: {},
+        zodSchema: {} as never,
+      });
+      const mockRouter = {
+        routes: [],
+        fetch: vi.fn(),
+      };
+      vi.mocked(createCrudRouter).mockReturnValue(mockRouter as never);
+
+      const req1 = new Request("http://localhost/openapi.json", {
+        method: "GET",
+      });
+      const res1 = await app.fetch(req1, mockEnv as never);
+      expect(res1.status).toBe(200);
+
+      const callCountAfterFirst = vi.mocked(getEntireSchemaConfig).mock.calls
+        .length;
+
+      // Second request with version 2 - should re-introspect
+      vi.mocked(getSchemaVersion).mockResolvedValueOnce("invalidate-test-v2");
+
+      const req2 = new Request("http://localhost/openapi.json", {
+        method: "GET",
+      });
+      const res2 = await app.fetch(req2, mockEnv as never);
+      expect(res2.status).toBe(200);
+
+      // Should have called getEntireSchemaConfig again due to version change
+      const callCountAfterSecond = vi.mocked(getEntireSchemaConfig).mock.calls
+        .length;
+      expect(callCountAfterSecond).toBeGreaterThan(callCountAfterFirst);
+    });
+
+    it("should handle schema version retrieval failure", async () => {
+      vi.mocked(getSchemaVersion).mockResolvedValue(null);
+
+      const req = new Request("http://localhost/openapi.json", {
+        method: "GET",
+      });
+
+      const res = await app.fetch(req, mockEnv as never);
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body).toHaveProperty("error");
+    });
+
+    it("should generate spec with correct metadata", async () => {
+      const mockSchemaConfig = {
+        users: USERS_TABLE_COLUMNS,
+      };
+
+      vi.mocked(getSchemaVersion).mockResolvedValue("schema-v1");
+      vi.mocked(getEntireSchemaConfig).mockResolvedValue(mockSchemaConfig);
+      vi.mocked(buildRuntimeSchema).mockReturnValue({
+        table: {},
+        zodSchema: {} as never,
+      });
+      const mockRouter = {
+        routes: [],
+        fetch: vi.fn(),
+      };
+      vi.mocked(createCrudRouter).mockReturnValue(mockRouter as never);
+
+      const req = new Request("http://localhost/openapi.json", {
+        method: "GET",
+      });
+
+      const res = await app.fetch(req, mockEnv as never);
+
+      expect(res.status).toBe(200);
+      const spec = (await res.json()) as Record<string, unknown>;
+
+      // Verify metadata
+      expect(spec.openapi).toBe("3.0.0");
+      const info = spec.info as Record<string, unknown>;
+      expect(info.title).toBe("Elekk Auto-API");
+      expect(info.version).toBe("1.0.0");
+      expect(info.description).toContain("Auto-generated REST API");
+
+      // Verify servers
+      const servers = spec.servers as Record<string, unknown>[];
+      expect(servers).toHaveLength(1);
+      expect(servers[0].url).toBe("http://localhost");
     });
   });
 });
