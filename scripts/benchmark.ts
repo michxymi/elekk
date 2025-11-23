@@ -9,6 +9,23 @@
 
 const API_BASE_URL = process.env.API_URL;
 
+if (!API_BASE_URL) {
+  console.error(
+    "❌ Error: API_URL environment variable is not set. Please set it to your deployed worker URL."
+  );
+  console.error("Example: export API_URL=https://elekk.example.workers.dev");
+  process.exit(1);
+}
+
+// Validate URL format
+try {
+  new URL(API_BASE_URL);
+} catch {
+  console.error(`❌ Error: API_URL is not a valid URL: ${API_BASE_URL}`);
+  console.error("Expected format: https://your-worker.workers.dev");
+  process.exit(1);
+}
+
 // ANSI color codes for pretty output
 const colors = {
   reset: "\x1b[0m",
