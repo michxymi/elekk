@@ -65,10 +65,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run tests
-        run: pnpm test:run
-
-      - name: Generate coverage report
+      - name: Run tests with coverage
         run: pnpm test:coverage
 
       - name: Upload coverage to artifacts
@@ -79,12 +76,15 @@ jobs:
           path: coverage/
           retention-days: 30
 
-      - name: Check coverage thresholds
+      - name: Coverage summary
+        if: always()
         run: |
           if [ -f coverage/coverage-summary.json ]; then
-            echo "Coverage report generated successfully"
-            cat coverage/coverage-summary.json
+            echo "### Test Coverage Report :test_tube:" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
+            cat coverage/coverage-summary.json >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           else
-            echo "Coverage report not found"
-            exit 1
+            echo "Coverage report not generated" >> $GITHUB_STEP_SUMMARY
           fi
