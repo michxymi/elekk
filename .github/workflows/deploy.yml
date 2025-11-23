@@ -86,11 +86,11 @@ jobs:
       - name: Run benchmarks
         run: pnpm run benchmark
         env:
-          API_URL: ${{ vars.API_URL }}
+          API_URL: ${{ secrets.API_URL || vars.API_URL }}
 
       - name: Benchmark summary
         if: always()
         run: |
           echo "### Performance Benchmarks :chart_with_upwards_trend:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Benchmarks completed for deployment at ${{ vars.API_URL }}" >> $GITHUB_STEP_SUMMARY
+          echo "Benchmarks completed for deployment" >> $GITHUB_STEP_SUMMARY
