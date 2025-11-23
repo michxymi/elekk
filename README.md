@@ -26,6 +26,7 @@ Elekk is a Cloudflare Worker that provides auto-generated REST APIs with OpenAPI
 src/
 ├── index.ts              # Main application with hot-caching
 ├── types.ts              # TypeScript type definitions
+├── constants.ts          # Application-wide constants
 └── lib/
     ├── introspector.ts   # Database schema introspection
     ├── builder.ts        # Runtime schema construction
@@ -247,5 +248,3 @@ Enable Cloudflare Smart Placement to run Workers closer to your database:
    - Generate CRUD router with OpenAPI routes
    - Cache router for subsequent requests
 5. **Route request** through generated router
-
-See [CLAUDE.md](./CLAUDE.md) for detailed development guidelines.
