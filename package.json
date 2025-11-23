@@ -11,7 +11,8 @@
     "test": "vitest",
     "test:run": "vitest run",
     "test:ui": "vitest --ui",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "benchmark": "pnpm dlx tsx scripts/benchmark.ts"
   },
   "dependencies": {
     "@hono/swagger-ui": "^0.5.2",
