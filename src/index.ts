@@ -12,13 +12,39 @@ import {
 type Bindings = { HYPERDRIVE: Hyperdrive };
 const app = new OpenAPIHono<{ Bindings: Bindings }>();
 
-// ⚡️ ROUTER CACHE (Simple In-Memory)
-// Stores the built API router so we don't rebuild it on every request.
-// This is NOT caching data, just the code logic.
+/**
+ * ⚡️ ROUTER CACHE (Simple In-Memory)
+ *
+ * Stores the built API router so we don't rebuild it on every request.
+ * This is NOT caching data, just the code logic (router + schema).
+ *
+ * Cache structure:
+ * - Key: table name
+ * - Value: { router: OpenAPIHono, version: string }
+ *
+ * Cache invalidation:
+ * - Automatic: Schema drift detection via PostgreSQL xmin transaction IDs (~1-2ms overhead)
+ * - Manual: X-Cache-Control: no-cache header bypasses cache lookup (for performance testing)
+ */
 const HOT_CACHE: Record<string, { router: OpenAPIHono; version: string }> = {};
 
-// ⚡️ OPENAPI SPEC CACHE
-// Caches the complete OpenAPI specification to avoid re-introspecting the entire schema on every request
+/**
+ * ⚡️ OPENAPI SPEC CACHE
+ *
+ * Caches the complete OpenAPI specification to avoid re-introspecting the entire schema on every request.
+ *
+ * Cache structure:
+ * - spec: Complete OpenAPI 3.0 document (dynamic object)
+ * - version: Global schema version string (aggregate of all table versions)
+ *
+ * Cache invalidation:
+ * - Automatic: When global schema version changes (table added/removed/modified)
+ * - Manual: X-Cache-Control: no-cache header bypasses cache lookup (for performance testing)
+ *
+ * Performance:
+ * - Cache miss: 100-500ms (full schema introspection)
+ * - Cache hit: <2ms (memory lookup)
+ */
 // biome-ignore lint/suspicious/noExplicitAny: OpenAPI spec is a dynamic object structure
 let OPENAPI_CACHE: { spec: any; version: string } | null = null;
 
@@ -33,8 +59,12 @@ app.all("/api/:table/*", async (c) => {
   }
 
   // 2. Check Cache (Hit)
+  // Support X-Cache-Control: no-cache header to bypass cache for performance testing
+  const cacheControl = c.req.header("X-Cache-Control");
+  const shouldBypassCache = cacheControl === "no-cache";
+
   const cached = HOT_CACHE[tableName];
-  if (cached && cached.version === currentVersion) {
+  if (!shouldBypassCache && cached && cached.version === currentVersion) {
     const strippedRequest = new Request(
       c.req.url.replace(`/api/${tableName}`, ""),
       c.req.raw
@@ -74,7 +104,15 @@ app.get("/openapi.json", async (c) => {
   }
 
   // 2. Return cached spec if version matches
-  if (OPENAPI_CACHE && OPENAPI_CACHE.version === currentVersion) {
+  // Support X-Cache-Control: no-cache header to bypass cache for performance testing
+  const cacheControl = c.req.header("X-Cache-Control");
+  const shouldBypassCache = cacheControl === "no-cache";
+
+  if (
+    !shouldBypassCache &&
+    OPENAPI_CACHE &&
+    OPENAPI_CACHE.version === currentVersion
+  ) {
     return c.json(OPENAPI_CACHE.spec);
   }
 

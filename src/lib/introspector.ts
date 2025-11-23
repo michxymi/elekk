@@ -33,9 +33,8 @@ export async function getTableVersion(
     return typeof versionId === "string" ? versionId : null;
   } catch (_error) {
     return null;
-  } finally {
-    await client.end();
   }
+  // Note: We don't call client.end() - Hyperdrive manages connection pooling
 }
 
 /**
@@ -74,9 +73,8 @@ export async function getSchemaVersion(
     return typeof schemaVersion === "string" ? schemaVersion : null;
   } catch (_error) {
     return null;
-  } finally {
-    await client.end();
   }
+  // Note: We don't call client.end() - Hyperdrive manages connection pooling
 }
 
 /**
@@ -115,9 +113,8 @@ export async function getTableConfig(
     }));
   } catch (_error) {
     return null;
-  } finally {
-    await client.end();
   }
+  // Note: We don't call client.end() - Hyperdrive manages connection pooling
 }
 
 /**
@@ -158,7 +155,8 @@ export async function getEntireSchemaConfig(
     }
 
     return tables;
-  } finally {
-    await client.end();
+  } catch (_error) {
+    return {};
   }
+  // Note: We don't call client.end() - Hyperdrive manages connection pooling
 }

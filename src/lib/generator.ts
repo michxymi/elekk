@@ -43,14 +43,12 @@ export function createCrudRouter(
       },
     }),
     async (c) => {
+      // Create a fresh client for this request
+      // With Hyperdrive, connection pooling is automatic - we don't call .end()
       const client = postgres(connectionString);
       const db = drizzle(client);
-      try {
-        const results = await db.select().from(table);
-        return c.json(results);
-      } finally {
-        await client.end();
-      }
+      const results = await db.select().from(table);
+      return c.json(results);
     }
   );
 
@@ -66,18 +64,16 @@ export function createCrudRouter(
       responses: { 201: { description: "Created" } },
     }),
     async (c) => {
+      // Create a fresh client for this request
+      // With Hyperdrive, connection pooling is automatic - we don't call .end()
       const client = postgres(connectionString);
       const db = drizzle(client);
-      try {
-        const body = await c.req.json();
-        const result = await db.insert(table).values(body).returning();
-        if (result.length === 0) {
-          return c.json({ error: "Insert failed" }, 500);
-        }
-        return c.json(result[0], 201);
-      } finally {
-        await client.end();
+      const body = await c.req.json();
+      const result = await db.insert(table).values(body).returning();
+      if (result.length === 0) {
+        return c.json({ error: "Insert failed" }, 500);
       }
+      return c.json(result[0], 201);
     }
   );
 

@@ -265,6 +265,140 @@ describe("Main Application (index.ts)", () => {
         TEST_CONNECTION_STRING
       );
     });
+
+    it("should bypass cache when X-Cache-Control: no-cache header is present", async () => {
+      const mockRouter = {
+        fetch: vi.fn().mockResolvedValue(
+          new Response(JSON.stringify(SAMPLE_USERS), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+        ),
+      };
+
+      const uniqueTable = "no_cache_test_users";
+
+      vi.mocked(getTableVersion).mockResolvedValue("v1");
+      vi.mocked(getTableConfig).mockResolvedValue(USERS_TABLE_COLUMNS);
+      vi.mocked(buildRuntimeSchema).mockReturnValue({
+        table: {},
+        zodSchema: {} as never,
+      });
+      vi.mocked(createCrudRouter).mockReturnValue(mockRouter as never);
+
+      // First request - builds router and caches it
+      const req1 = new Request(`http://localhost/api/${uniqueTable}/`, {
+        method: "GET",
+      });
+      await app.fetch(req1, mockEnv as never);
+
+      // Clear mock call counts
+      vi.mocked(getTableConfig).mockClear();
+      vi.mocked(buildRuntimeSchema).mockClear();
+      vi.mocked(createCrudRouter).mockClear();
+
+      // Second request WITH X-Cache-Control: no-cache header - should bypass cache
+      const req2 = new Request(`http://localhost/api/${uniqueTable}/`, {
+        method: "GET",
+        headers: { "X-Cache-Control": "no-cache" },
+      });
+      const res2 = await app.fetch(req2, mockEnv as never);
+
+      expect(res2.status).toBe(200);
+      // These SHOULD be called even though router is cached
+      expect(getTableConfig).toHaveBeenCalledOnce();
+      expect(buildRuntimeSchema).toHaveBeenCalledOnce();
+      expect(createCrudRouter).toHaveBeenCalledOnce();
+    });
+
+    it("should use cache when X-Cache-Control header is absent", async () => {
+      const mockRouter = {
+        fetch: vi.fn().mockResolvedValue(
+          new Response(JSON.stringify(SAMPLE_USERS), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+        ),
+      };
+
+      const uniqueTable = "normal_cache_test_users";
+
+      vi.mocked(getTableVersion).mockResolvedValue("v1");
+      vi.mocked(getTableConfig).mockResolvedValue(USERS_TABLE_COLUMNS);
+      vi.mocked(buildRuntimeSchema).mockReturnValue({
+        table: {},
+        zodSchema: {} as never,
+      });
+      vi.mocked(createCrudRouter).mockReturnValue(mockRouter as never);
+
+      // First request - builds router
+      const req1 = new Request(`http://localhost/api/${uniqueTable}/`, {
+        method: "GET",
+      });
+      await app.fetch(req1, mockEnv as never);
+
+      // Clear mock call counts
+      vi.mocked(getTableConfig).mockClear();
+      vi.mocked(buildRuntimeSchema).mockClear();
+      vi.mocked(createCrudRouter).mockClear();
+
+      // Second request WITHOUT header - should use cache
+      const req2 = new Request(`http://localhost/api/${uniqueTable}/`, {
+        method: "GET",
+      });
+      const res2 = await app.fetch(req2, mockEnv as never);
+
+      expect(res2.status).toBe(200);
+      // These should NOT be called on cache hit
+      expect(getTableConfig).not.toHaveBeenCalled();
+      expect(buildRuntimeSchema).not.toHaveBeenCalled();
+      expect(createCrudRouter).not.toHaveBeenCalled();
+    });
+
+    it("should use cache when X-Cache-Control has other values", async () => {
+      const mockRouter = {
+        fetch: vi.fn().mockResolvedValue(
+          new Response(JSON.stringify(SAMPLE_USERS), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+        ),
+      };
+
+      const uniqueTable = "other_cache_control_users";
+
+      vi.mocked(getTableVersion).mockResolvedValue("v1");
+      vi.mocked(getTableConfig).mockResolvedValue(USERS_TABLE_COLUMNS);
+      vi.mocked(buildRuntimeSchema).mockReturnValue({
+        table: {},
+        zodSchema: {} as never,
+      });
+      vi.mocked(createCrudRouter).mockReturnValue(mockRouter as never);
+
+      // First request - builds router
+      const req1 = new Request(`http://localhost/api/${uniqueTable}/`, {
+        method: "GET",
+      });
+      await app.fetch(req1, mockEnv as never);
+
+      // Clear mock call counts
+      vi.mocked(getTableConfig).mockClear();
+      vi.mocked(buildRuntimeSchema).mockClear();
+      vi.mocked(createCrudRouter).mockClear();
+
+      // Second request with different Cache-Control value - should use cache
+      const req2 = new Request(`http://localhost/api/${uniqueTable}/`, {
+        method: "GET",
+        headers: { "X-Cache-Control": "max-age=3600" },
+      });
+      const res2 = await app.fetch(req2, mockEnv as never);
+
+      expect(res2.status).toBe(200);
+      // These should NOT be called because only "no-cache" bypasses cache
+      expect(getTableConfig).not.toHaveBeenCalled();
+      expect(buildRuntimeSchema).not.toHaveBeenCalled();
+      expect(createCrudRouter).not.toHaveBeenCalled();
+    });
   });
 
   describe("URL Routing and Request Forwarding", () => {
@@ -757,6 +891,89 @@ describe("Main Application (index.ts)", () => {
       const servers = spec.servers as Record<string, unknown>[];
       expect(servers).toHaveLength(1);
       expect(servers[0].url).toBe("http://localhost");
+    });
+
+    it("should bypass OpenAPI cache when X-Cache-Control: no-cache header is present", async () => {
+      const mockSchemaConfig = {
+        users: USERS_TABLE_COLUMNS,
+      };
+
+      vi.mocked(getSchemaVersion).mockResolvedValue("openapi-no-cache-test-v1");
+      vi.mocked(getEntireSchemaConfig).mockResolvedValue(mockSchemaConfig);
+      vi.mocked(buildRuntimeSchema).mockReturnValue({
+        table: {},
+        zodSchema: {} as never,
+      });
+      const mockRouter = {
+        routes: [],
+        fetch: vi.fn(),
+      };
+      vi.mocked(createCrudRouter).mockReturnValue(mockRouter as never);
+
+      // First request - builds and caches spec
+      const req1 = new Request("http://localhost/openapi.json", {
+        method: "GET",
+      });
+      const res1 = await app.fetch(req1, mockEnv as never);
+      expect(res1.status).toBe(200);
+
+      const callCountAfterFirst = vi.mocked(getEntireSchemaConfig).mock.calls
+        .length;
+
+      // Second request WITH X-Cache-Control: no-cache - should bypass cache
+      const req2 = new Request("http://localhost/openapi.json", {
+        method: "GET",
+        headers: { "X-Cache-Control": "no-cache" },
+      });
+      const res2 = await app.fetch(req2, mockEnv as never);
+      expect(res2.status).toBe(200);
+
+      // getEntireSchemaConfig SHOULD be called again even though spec is cached
+      const callCountAfterSecond = vi.mocked(getEntireSchemaConfig).mock.calls
+        .length;
+      expect(callCountAfterSecond).toBeGreaterThan(callCountAfterFirst);
+    });
+
+    it("should use cached OpenAPI spec when X-Cache-Control header is absent", async () => {
+      const mockSchemaConfig = {
+        users: USERS_TABLE_COLUMNS,
+      };
+
+      vi.mocked(getSchemaVersion).mockResolvedValue(
+        "openapi-normal-cache-test-v1"
+      );
+      vi.mocked(getEntireSchemaConfig).mockResolvedValue(mockSchemaConfig);
+      vi.mocked(buildRuntimeSchema).mockReturnValue({
+        table: {},
+        zodSchema: {} as never,
+      });
+      const mockRouter = {
+        routes: [],
+        fetch: vi.fn(),
+      };
+      vi.mocked(createCrudRouter).mockReturnValue(mockRouter as never);
+
+      // First request - builds spec
+      const req1 = new Request("http://localhost/openapi.json", {
+        method: "GET",
+      });
+      const res1 = await app.fetch(req1, mockEnv as never);
+      expect(res1.status).toBe(200);
+
+      const callCountAfterFirst = vi.mocked(getEntireSchemaConfig).mock.calls
+        .length;
+
+      // Second request WITHOUT header - should use cache
+      const req2 = new Request("http://localhost/openapi.json", {
+        method: "GET",
+      });
+      const res2 = await app.fetch(req2, mockEnv as never);
+      expect(res2.status).toBe(200);
+
+      // getEntireSchemaConfig should NOT be called again
+      const callCountAfterSecond = vi.mocked(getEntireSchemaConfig).mock.calls
+        .length;
+      expect(callCountAfterSecond).toBe(callCountAfterFirst);
     });
   });
 });

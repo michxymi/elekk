@@ -96,7 +96,7 @@ describe("createCrudRouter", () => {
       expect(postgres).toHaveBeenCalledWith(TEST_CONNECTION_STRING);
       expect(drizzle).toHaveBeenCalledWith(mockClient);
       expect(mockDb.select).toHaveBeenCalledOnce();
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // Note: We don't call .end() anymore - Hyperdrive manages connections
 
       const body = await res.json();
       expect(body).toEqual(SAMPLE_USERS);
@@ -124,7 +124,7 @@ describe("createCrudRouter", () => {
       expect(body).toEqual([]);
     });
 
-    it("should close database connection after successful query", async () => {
+    it("should not close database connection (Hyperdrive manages connections)", async () => {
       mockDb = createMockDrizzleDb({ selectResult: SAMPLE_USERS });
       vi.mocked(drizzle).mockReturnValue(mockDb as never);
 
@@ -141,10 +141,11 @@ describe("createCrudRouter", () => {
       const req = new Request("http://localhost/");
       await router.fetch(req);
 
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // We don't call .end() - Hyperdrive manages connection pooling
+      expect(mockClient.end).not.toHaveBeenCalled();
     });
 
-    it("should close database connection after failed query", async () => {
+    it("should not close connection even after failed query (Hyperdrive manages connections)", async () => {
       mockDb = createMockDrizzleDb();
       mockDb.select = vi.fn().mockReturnValue({
         from: vi.fn().mockRejectedValue(new Error("Database error")),
@@ -169,7 +170,8 @@ describe("createCrudRouter", () => {
         // Expected to throw
       }
 
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // We don't call .end() even on errors - Hyperdrive manages connection pooling
+      expect(mockClient.end).not.toHaveBeenCalled();
     });
 
     it("should return JSON content-type header", async () => {

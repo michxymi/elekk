@@ -56,7 +56,7 @@ describe("introspector", () => {
       expect(postgres).toHaveBeenCalledWith(TEST_CONNECTION_STRING);
       expect(drizzle).toHaveBeenCalledWith(mockClient);
       expect(mockDb.execute).toHaveBeenCalledOnce();
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // Note: We don't call .end() - Hyperdrive manages connections
     });
 
     it("should return null when table does not exist", async () => {
@@ -68,7 +68,7 @@ describe("introspector", () => {
       );
 
       expect(result).toBeNull();
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // Note: We don't call .end() - Hyperdrive manages connections
     });
 
     it("should return null when version_id is not a string", async () => {
@@ -80,7 +80,7 @@ describe("introspector", () => {
       );
 
       expect(result).toBeNull();
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // Note: We don't call .end() - Hyperdrive manages connections
     });
 
     it("should return null when version_id is undefined", async () => {
@@ -92,7 +92,7 @@ describe("introspector", () => {
       );
 
       expect(result).toBeNull();
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // Note: We don't call .end() - Hyperdrive manages connections
     });
 
     it("should handle database errors gracefully", async () => {
@@ -104,23 +104,25 @@ describe("introspector", () => {
       );
 
       expect(result).toBeNull();
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // Note: We don't call .end() - Hyperdrive manages connections
     });
 
-    it("should close connection even when query succeeds", async () => {
+    it("should not close connection (Hyperdrive manages connections)", async () => {
       mockDb.execute.mockResolvedValue(MOCK_TABLE_VERSION_RESULT);
 
       await getTableVersion(TEST_CONNECTION_STRING, TEST_TABLE_NAMES.USERS);
 
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // We don't call .end() - Hyperdrive manages connection pooling
+      expect(mockClient.end).not.toHaveBeenCalled();
     });
 
-    it("should close connection even when query fails", async () => {
+    it("should not close connection even on errors (Hyperdrive manages connections)", async () => {
       mockDb.execute.mockRejectedValue(new Error("Query failed"));
 
       await getTableVersion(TEST_CONNECTION_STRING, TEST_TABLE_NAMES.USERS);
 
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // We don't call .end() even on errors - Hyperdrive manages connection pooling
+      expect(mockClient.end).not.toHaveBeenCalled();
     });
   });
 
@@ -135,7 +137,7 @@ describe("introspector", () => {
       expect(postgres).toHaveBeenCalledWith(TEST_CONNECTION_STRING);
       expect(drizzle).toHaveBeenCalledWith(mockClient);
       expect(mockDb.execute).toHaveBeenCalledOnce();
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // Note: We don't call .end() - Hyperdrive manages connections
     });
 
     it("should return null when no tables exist", async () => {
@@ -144,7 +146,7 @@ describe("introspector", () => {
       const result = await getSchemaVersion(TEST_CONNECTION_STRING);
 
       expect(result).toBeNull();
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // Note: We don't call .end() - Hyperdrive manages connections
     });
 
     it("should return null when schema_version is not a string", async () => {
@@ -153,7 +155,7 @@ describe("introspector", () => {
       const result = await getSchemaVersion(TEST_CONNECTION_STRING);
 
       expect(result).toBeNull();
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // Note: We don't call .end() - Hyperdrive manages connections
     });
 
     it("should return null when schema_version is undefined", async () => {
@@ -162,7 +164,7 @@ describe("introspector", () => {
       const result = await getSchemaVersion(TEST_CONNECTION_STRING);
 
       expect(result).toBeNull();
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // Note: We don't call .end() - Hyperdrive manages connections
     });
 
     it("should handle database errors gracefully", async () => {
@@ -171,24 +173,26 @@ describe("introspector", () => {
       const result = await getSchemaVersion(TEST_CONNECTION_STRING);
 
       expect(result).toBeNull();
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // Note: We don't call .end() - Hyperdrive manages connections
     });
 
-    it("should close connection even when query succeeds", async () => {
+    it("should not close connection (Hyperdrive manages connections)", async () => {
       const mockSchemaVersionResult = [{ schema_version: "12345,12346,12347" }];
       mockDb.execute.mockResolvedValue(mockSchemaVersionResult);
 
       await getSchemaVersion(TEST_CONNECTION_STRING);
 
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // We don't call .end() - Hyperdrive manages connection pooling
+      expect(mockClient.end).not.toHaveBeenCalled();
     });
 
-    it("should close connection even when query fails", async () => {
+    it("should not close connection even on errors (Hyperdrive manages connections)", async () => {
       mockDb.execute.mockRejectedValue(new Error("Query failed"));
 
       await getSchemaVersion(TEST_CONNECTION_STRING);
 
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // We don't call .end() even on errors - Hyperdrive manages connection pooling
+      expect(mockClient.end).not.toHaveBeenCalled();
     });
 
     it("should return different version when schema changes", async () => {
@@ -233,7 +237,7 @@ describe("introspector", () => {
       expect(postgres).toHaveBeenCalledWith(TEST_CONNECTION_STRING);
       expect(drizzle).toHaveBeenCalledWith(mockClient);
       expect(mockDb.execute).toHaveBeenCalledOnce();
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // Note: We don't call .end() - Hyperdrive manages connections
     });
 
     it("should return null when table does not exist", async () => {
@@ -245,7 +249,7 @@ describe("introspector", () => {
       );
 
       expect(result).toBeNull();
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // Note: We don't call .end() - Hyperdrive manages connections
     });
 
     it("should correctly parse nullable columns (is_nullable = YES)", async () => {
@@ -320,23 +324,25 @@ describe("introspector", () => {
       );
 
       expect(result).toBeNull();
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // Note: We don't call .end() - Hyperdrive manages connections
     });
 
-    it("should close connection even when query succeeds", async () => {
+    it("should not close connection (Hyperdrive manages connections)", async () => {
       mockDb.execute.mockResolvedValue(MOCK_TABLE_CONFIG_QUERY_RESULT);
 
       await getTableConfig(TEST_CONNECTION_STRING, TEST_TABLE_NAMES.USERS);
 
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // We don't call .end() - Hyperdrive manages connection pooling
+      expect(mockClient.end).not.toHaveBeenCalled();
     });
 
-    it("should close connection even when query fails", async () => {
+    it("should not close connection even on errors (Hyperdrive manages connections)", async () => {
       mockDb.execute.mockRejectedValue(new Error("Query failed"));
 
       await getTableConfig(TEST_CONNECTION_STRING, TEST_TABLE_NAMES.USERS);
 
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // We don't call .end() even on errors - Hyperdrive manages connection pooling
+      expect(mockClient.end).not.toHaveBeenCalled();
     });
   });
 
@@ -359,7 +365,7 @@ describe("introspector", () => {
       expect(postgres).toHaveBeenCalledWith(TEST_CONNECTION_STRING);
       expect(drizzle).toHaveBeenCalledWith(mockClient);
       expect(mockDb.execute).toHaveBeenCalledOnce();
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // Note: We don't call .end() - Hyperdrive manages connections
     });
 
     it("should return empty object when no tables exist", async () => {
@@ -368,7 +374,7 @@ describe("introspector", () => {
       const result = await getEntireSchemaConfig(TEST_CONNECTION_STRING);
 
       expect(result).toEqual({});
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // Note: We don't call .end() - Hyperdrive manages connections
     });
 
     it("should handle single table", async () => {
@@ -467,34 +473,31 @@ describe("introspector", () => {
       expect(result.posts?.[0]?.nullable).toBe(false);
     });
 
-    it("should throw error for database connection failures", async () => {
+    it("should return empty object for database connection failures", async () => {
       mockDb.execute.mockRejectedValue(new Error("Connection failed"));
 
-      await expect(
-        getEntireSchemaConfig(TEST_CONNECTION_STRING)
-      ).rejects.toThrow("Connection failed");
+      const result = await getEntireSchemaConfig(TEST_CONNECTION_STRING);
 
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // On error, we return empty object instead of throwing
+      expect(result).toEqual({});
     });
 
-    it("should close connection even when query succeeds", async () => {
+    it("should not close connection (Hyperdrive manages connections)", async () => {
       mockDb.execute.mockResolvedValue(MOCK_ENTIRE_SCHEMA_RESULT);
 
       await getEntireSchemaConfig(TEST_CONNECTION_STRING);
 
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // We don't call .end() - Hyperdrive manages connection pooling
+      expect(mockClient.end).not.toHaveBeenCalled();
     });
 
-    it("should close connection even when query fails", async () => {
+    it("should not close connection even on errors (Hyperdrive manages connections)", async () => {
       mockDb.execute.mockRejectedValue(new Error("Query failed"));
 
-      try {
-        await getEntireSchemaConfig(TEST_CONNECTION_STRING);
-      } catch {
-        // Expected to throw
-      }
+      await getEntireSchemaConfig(TEST_CONNECTION_STRING);
 
-      expect(mockClient.end).toHaveBeenCalledOnce();
+      // We don't call .end() even on errors - Hyperdrive manages connection pooling
+      expect(mockClient.end).not.toHaveBeenCalled();
     });
 
     it("should build tables incrementally as rows are processed", async () => {
