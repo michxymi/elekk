@@ -224,7 +224,7 @@ Example: `GET https://your-worker.workers.dev/api/users/` returns all users from
 
 **ON CONFLICT (Upsert):**
 - `?on_conflict=email` - column to check for conflicts (must have UNIQUE constraint)
-- `?on_conflict_action=nothing` - skip insert on conflict (DO NOTHING)
+- `?on_conflict_action=nothing` - skip insert on conflict (DO NOTHING), returns 204 No Content if conflict detected
 - `?on_conflict_update=name,updated_at` - columns to update on conflict (DO UPDATE)
 
 **Combined Upsert Example:**

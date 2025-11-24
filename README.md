@@ -213,6 +213,7 @@ curl -X POST "http://localhost:8787/api/users/?returning=id,name" \
 **ON CONFLICT DO NOTHING (Skip on duplicate):**
 ```bash
 # Skip insert if email already exists (requires UNIQUE constraint on email)
+# Returns 204 No Content if conflict detected, 201 if inserted
 curl -X POST "http://localhost:8787/api/users/?on_conflict=email&on_conflict_action=nothing" \
   -H "Content-Type: application/json" \
   -d '{"name":"Maybe New","email":"existing@example.com","is_active":true}'
