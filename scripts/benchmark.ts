@@ -14,10 +14,17 @@
  * - Concurrent load: <600ms average (accounts for connection pooling overhead)
  *
  * Geographic Context:
- * - Database: Neon Postgres in us-east-1
+ * - Database: Neon Postgres in us-east-1 (free tier)
  * - Network RTT UK→US-East: ~80-120ms baseline
  * - Smart Placement: Worker runs near database to minimize DB latency
  * - Primary bottleneck: Database query execution time (~150-200ms from UK)
+ *
+ * Neon Free Tier Behavior:
+ * - Autosuspend: Database suspends after 5 minutes of inactivity (cannot be configured)
+ * - Cold start penalty: +500-800ms on first query after suspension
+ * - Mitigation: This script includes a warm-up phase to wake the database before benchmarks
+ * - Note: Benchmarks run immediately after one another will show better performance than
+ *   benchmarks run after 5+ minutes of inactivity
  */
 
 const API_BASE_URL = process.env.API_URL;
@@ -480,6 +487,38 @@ async function benchmarkConcurrentLoad(): Promise<void> {
 }
 
 /**
+ * Warm up the database to avoid Neon autosuspend penalty
+ * On Neon free tier, databases suspend after 5 minutes of inactivity
+ */
+async function warmupDatabase(): Promise<void> {
+  console.log(
+    `${colors.bright}${colors.yellow}⏳ Warming up database (Neon free tier has 5min autosuspend)...${colors.reset}`
+  );
+
+  try {
+    const { duration } = await timedRequest(`${API_BASE_URL}/api/users/`);
+
+    if (duration > 1000) {
+      console.log(
+        `${colors.yellow}   Database was suspended. Wake-up took ${Math.round(duration)}ms${colors.reset}`
+      );
+      console.log(
+        `${colors.yellow}   Waiting 2 seconds for database to stabilize...${colors.reset}\n`
+      );
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    } else {
+      console.log(
+        `${colors.green}   Database already warm (${Math.round(duration)}ms)${colors.reset}\n`
+      );
+    }
+  } catch {
+    console.log(
+      `${colors.yellow}   Warning: Warm-up request failed, continuing anyway...${colors.reset}\n`
+    );
+  }
+}
+
+/**
  * Main benchmark runner
  */
 async function main(): Promise<void> {
@@ -491,6 +530,7 @@ async function main(): Promise<void> {
   );
 
   try {
+    await warmupDatabase();
     await benchmarkColdStart();
     await benchmarkCacheHits();
     await benchmarkCacheSpeedup();
