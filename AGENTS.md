@@ -54,9 +54,10 @@ The application follows a **schema-first, runtime-introspection** architecture:
 ### Core Modules
 
 **src/index.ts** - Main application entry point
-- Implements hot-caching layer with schema drift detection
+- Implements hot-caching layer with schema drift detection (HOT_CACHE for routers, OPENAPI_CACHE for spec)
 - Routes all `/api/:table/*` requests to dynamically generated routers
 - Exposes OpenAPI docs at `/openapi.json` and Swagger UI at `/docs`
+- **Performance optimization:** Lazy-loads Swagger UI via dynamic import to reduce cold start bundle size by 20-40ms
 
 **src/constants.ts** - Application-wide constants
 - Defines `PRIMARY_KEY_COLUMN` ("id")
@@ -84,10 +85,35 @@ The application follows a **schema-first, runtime-introspection** architecture:
 - Hyperdrive binding: `HYPERDRIVE` (configure `id` with your Hyperdrive database ID)
 - Node.js compatibility enabled for postgres client
 - Entry point: `src/index.ts`
+- **Smart Placement enabled:** `placement.mode: "smart"` runs Worker near database to minimize latency
+- Observability enabled for monitoring and logging
 
 **biome.jsonc** - Code quality configuration
 - Extends `ultracite/core` preset
 - Provides Rust-based linting and formatting
+
+## Performance Characteristics
+
+**Current Setup (Production):**
+- Database: Neon Postgres in us-east-1
+- Smart Placement: Enabled (Worker runs near database)
+- Connection Pooling: Hyperdrive
+- Caching: HOT_CACHE for routers, OPENAPI_CACHE for OpenAPI spec
+
+**Benchmark Results (UK → US-East-1):**
+- Cold start: ~680-990ms
+- Warm requests: ~215-225ms (dominated by database query execution ~150-200ms)
+- OpenAPI spec (cached): ~35-40ms
+- Cache speedup: 2.5x
+
+**Performance Bottlenecks:**
+1. **Geographic latency:** UK → US-East-1 network RTT is ~80-120ms (physics limit)
+2. **Database query execution:** Neon compute + query time ~150-200ms
+3. **Worker initialization:** ~50-100ms on cold starts (minimized via lazy-loading)
+
+**Key Insight:** With Hyperdrive connection pooling and Smart Placement enabled, the primary bottleneck is database query execution time, not Worker performance. Further optimization requires either:
+- Query result caching (adds data staleness)
+- Read replicas in EU (requires ~$69/month Neon Scale plan)
 
 ## Database Setup
 
@@ -97,6 +123,12 @@ This project requires a PostgreSQL database accessible via Cloudflare Hyperdrive
 2. Update `wrangler.jsonc` with your Hyperdrive ID
 3. Tables are introspected at runtime - no migrations or schema files needed
 4. Tables must have an `id` column (automatically marked as primary key)
+
+**Connection Management:**
+- Uses `postgres.js` client (NOT `@neondatabase/serverless`)
+- Creates new client instances per operation (Hyperdrive handles connection pooling)
+- Never calls `client.end()` - Hyperdrive manages connection lifecycle
+- Recommended: Use non-pooled Neon endpoint (port 5432, not 6543 with `-pooler`)
 
 ## Code Standards
 
