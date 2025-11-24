@@ -1,3 +1,20 @@
+## 0.0.2 (2025-11-24)
+
+
+### Bug Fixes
+
+* update performance benchmarks for cache hits and concurrent load ([bd5be23](https://github.com/michxymi/elekk/commit/bd5be23a0a4d0762ac023b7d4baa1334f28ed5a2))
+
+
+### Features
+
+* use neon postgres hyperdrive binding and smart placement mode ([9596fd4](https://github.com/michxymi/elekk/commit/9596fd45f04b051c51f1fe09b4dd07054875d8a5))
+
+
+### Performance Improvements
+
+* lazy load Swagger UI ([68e9eba](https://github.com/michxymi/elekk/commit/68e9eba5cf992bfa2b914d2bd04b013802df35b0))
+
 ## 0.0.1 (2025-11-24)
 
 
