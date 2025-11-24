@@ -726,21 +726,21 @@ async function benchmarkPostQueryParams(): Promise<void> {
         }),
       }
     );
-  const nothingOk = nothingRes.ok;
+  // 204 No Content indicates conflict was detected, no insert performed
+  const nothingOk = nothingRes.status === 204;
   console.log(
     `${nothingOk ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} POST /api/users/?on_conflict=email&on_conflict_action=nothing → ${formatDuration(nothingDuration, 500)} ${nothingOk ? "✓" : "✗"}`
   );
   if (nothingOk) {
-    const data = await nothingRes.json();
     console.log(
-      `  ${colors.blue}→${colors.reset} Conflict handled: ${JSON.stringify(data).slice(0, 60)}...`
+      `  ${colors.blue}→${colors.reset} Conflict handled: 204 No Content (no insert performed)`
     );
   }
   recordBenchmark({
     name: "POST: ON CONFLICT DO NOTHING",
     passed: nothingOk,
     duration: nothingDuration,
-    expected: "status 200 or 201",
+    expected: "status 204",
     actual: `status ${nothingRes.status}`,
     error: nothingOk ? undefined : await nothingRes.clone().text(),
   });

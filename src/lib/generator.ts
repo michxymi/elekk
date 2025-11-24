@@ -496,6 +496,10 @@ export function createCrudRouter(
           content: { "application/json": { schema: selectSchema } },
           description: "Record created",
         },
+        204: {
+          description:
+            "Conflict detected, no insert performed (ON CONFLICT DO NOTHING)",
+        },
       },
     }),
     async (c) => {
@@ -527,12 +531,9 @@ export function createCrudRouter(
 
       // Handle ON CONFLICT DO NOTHING case - may return empty array
       if (result.length === 0) {
-        // For DO NOTHING, return 200 with empty body to indicate no insert
+        // For DO NOTHING, return 204 No Content to indicate conflict with no insert
         if (insertParams.onConflict?.action === "nothing") {
-          return c.json(
-            { message: "Conflict detected, no insert performed" },
-            200
-          );
+          return c.body(null, 204);
         }
         return c.json({ error: "Insert failed" }, 500);
       }
