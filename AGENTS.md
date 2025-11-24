@@ -41,15 +41,17 @@ pnpm benchmark
 
 The application follows a **schema-first, runtime-introspection** architecture:
 
-1. **Request arrives** at `/api/:table/*` (e.g., `/api/users/`)
+1. **Request arrives** at `/api/:table/*` (e.g., `/api/users/?name=John&order_by=-created_at`)
 2. **Drift detection** checks if table schema changed via `getTableVersion()` (src/lib/introspector.ts:7)
 3. **Cache lookup** checks `HOT_CACHE` for existing router
 4. **On cache miss:**
    - Introspect table columns via `getTableConfig()` (src/lib/introspector.ts:26)
    - Build runtime Drizzle schema + Zod validation via `buildRuntimeSchema()` (src/lib/builder.ts:25)
-   - Generate CRUD router with OpenAPI routes via `createCrudRouter()` (src/lib/generator.ts:6)
+   - Generate CRUD router with OpenAPI routes and typed query params via `createCrudRouter()` (src/lib/generator.ts)
    - Cache router for subsequent requests
-5. **Route request** through generated router
+5. **Query parameter parsing** via `parseQueryParams()` extracts filters, sorting, pagination
+6. **Query building** via `executeQuery()` constructs Drizzle ORM query with WHERE, ORDER BY, LIMIT, OFFSET
+7. **Data caching** with SWR pattern - stale data served immediately, fresh data fetched in background
 
 ### Core Modules
 
@@ -76,8 +78,28 @@ The application follows a **schema-first, runtime-introspection** architecture:
 **src/lib/generator.ts** - CRUD router generation
 - Creates OpenAPIHono router with auto-generated endpoints
 - Generates Zod schemas for request/response validation via drizzle-zod
-- Currently implements: GET / (list), POST / (create)
+- Generates fully-typed query parameter schemas based on column metadata
+- Implements: GET / (list with filtering/sorting/pagination), POST / (create)
 - TODO: Add GET /:id, PUT /:id, DELETE /:id endpoints
+
+**src/lib/query-params.ts** - Query parameter parsing
+- `parseQueryParams()` - Parses query string into structured `ParsedQuery` object
+- `parseFilterKey()` - Extracts field name and operator from param keys (e.g., `age__gt` → field: `age`, operator: `gt`)
+- `coerceValue()` - Type coercion based on PostgreSQL column types
+- `generateQueryCacheKey()` - Creates deterministic cache keys for query results
+- Supports operators: `eq`, `gt`, `gte`, `lt`, `lte`, `like`, `ilike`, `in`, `isnull`
+
+**src/lib/query-builder.ts** - Drizzle ORM query construction
+- `buildWhereClause()` - Converts filter conditions to Drizzle SQL expressions
+- `buildOrderByClause()` - Converts sort directives to Drizzle order expressions
+- `buildSelectColumns()` - Builds partial field selection for queries
+- `executeQuery()` - Main entry point for executing filtered/sorted/paginated queries
+
+**src/lib/data-cache.ts** - KV caching utilities
+- `readCachedQueryResult()` / `writeCachedQueryResult()` - Query result caching
+- `readCachedOpenApi()` / `writeCachedOpenApi()` - OpenAPI spec caching
+- `getListCacheKey()` / `getQueryCachePrefix()` - Cache key generation
+- Implements SWR (stale-while-revalidate) caching pattern
 
 ### Configuration
 
@@ -150,6 +172,33 @@ After deployment, access:
 - **Table endpoints:** `https://your-worker.workers.dev/api/{table_name}/`
 
 Example: `GET https://your-worker.workers.dev/api/users/` returns all users from the `users` table.
+
+### Query Parameter Syntax
+
+**Filtering (WHERE clauses):**
+- `?field=value` - equality (e.g., `?name=John`)
+- `?field__gt=5` - greater than
+- `?field__gte=5` - greater than or equal
+- `?field__lt=10` - less than
+- `?field__lte=10` - less than or equal
+- `?field__like=%pattern%` - LIKE (case-sensitive)
+- `?field__ilike=%pattern%` - ILIKE (case-insensitive)
+- `?field__in=val1,val2,val3` - IN array
+- `?field__isnull=true` - IS NULL / IS NOT NULL
+
+**Sorting (ORDER BY):**
+- `?order_by=name` - ascending
+- `?order_by=-name` - descending (prefix with `-`)
+- `?order_by=name,-created_at` - multiple columns
+
+**Pagination (LIMIT/OFFSET):**
+- `?limit=10` - LIMIT
+- `?offset=20` - OFFSET
+
+**Field Selection (SELECT):**
+- `?select=id,name,email` - only return specified fields
+
+All query parameters are typed per-table based on introspected column metadata and appear in Swagger UI.
 
 ### OpenAPI Documentation Features
 

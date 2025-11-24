@@ -5,8 +5,9 @@ Elekk is a Cloudflare Worker that provides auto-generated REST APIs with OpenAPI
 **Key Features:**
 - 🔄 Runtime database schema introspection
 - 📝 Auto-generated OpenAPI 3.1 documentation
-- ⚡ Hot-caching with schema drift detection
+- ⚡ Hot-caching with schema drift detection (SWR pattern)
 - 🎯 Zero-config CRUD endpoints for any table
+- 🔍 SQL-like query parameters (filtering, sorting, pagination)
 - 🔌 PostgreSQL via Cloudflare Hyperdrive
 
 **Tech Stack:** Cloudflare Workers, Hono, @hono/zod-openapi, Drizzle ORM, Zod
@@ -30,7 +31,10 @@ src/
 └── lib/
     ├── introspector.ts   # Database schema introspection
     ├── builder.ts        # Runtime schema construction
-    └── generator.ts      # CRUD router generation
+    ├── generator.ts      # CRUD router generation
+    ├── query-params.ts   # Query parameter parsing
+    ├── query-builder.ts  # Drizzle ORM query construction
+    └── data-cache.ts     # KV caching utilities
 ```
 
 ## Local Testing
@@ -127,14 +131,71 @@ curl http://localhost:8787/api/products/
 ```
 
 **Access Swagger UI:**
-Open `http://localhost:8787/ui` in your browser
+Open `http://localhost:8787/docs` in your browser
 
 **Access OpenAPI spec:**
 ```bash
-curl http://localhost:8787/doc
+curl http://localhost:8787/openapi.json
 ```
 
-### Step 6: Test Schema Drift Detection
+### Step 6: Query Parameters
+
+Elekk supports SQL-like query parameters for filtering, sorting, pagination, and field selection:
+
+**Filtering (WHERE clauses):**
+```bash
+# Equality filter
+curl "http://localhost:8787/api/users/?name=Alice%20Johnson"
+
+# Comparison operators (gt, gte, lt, lte)
+curl "http://localhost:8787/api/products/?price__gte=2000"
+
+# Pattern matching (like, ilike)
+curl "http://localhost:8787/api/users/?email__ilike=%25@example.com"
+
+# IN operator
+curl "http://localhost:8787/api/users/?id__in=1,2,3"
+
+# IS NULL check
+curl "http://localhost:8787/api/users/?age__isnull=true"
+```
+
+**Sorting (ORDER BY):**
+```bash
+# Ascending sort
+curl "http://localhost:8787/api/users/?order_by=name"
+
+# Descending sort (prefix with -)
+curl "http://localhost:8787/api/products/?order_by=-price"
+
+# Multiple sort fields
+curl "http://localhost:8787/api/users/?order_by=is_active,-created_at"
+```
+
+**Pagination (LIMIT/OFFSET):**
+```bash
+# Limit results
+curl "http://localhost:8787/api/users/?limit=10"
+
+# Pagination
+curl "http://localhost:8787/api/users/?limit=10&offset=20"
+```
+
+**Field Selection (SELECT):**
+```bash
+# Return only specific fields
+curl "http://localhost:8787/api/users/?select=id,name,email"
+```
+
+**Combined Example:**
+```bash
+# Active users, sorted by name, first 10 results, only id and name
+curl "http://localhost:8787/api/users/?is_active=true&order_by=name&limit=10&select=id,name"
+```
+
+All query parameters are fully documented in the OpenAPI spec and appear in Swagger UI with proper types and descriptions.
+
+### Step 7: Test Schema Drift Detection
 
 Modify the database schema and watch Elekk automatically detect changes:
 
@@ -254,6 +315,8 @@ Deploy read replicas closer to users for global low latency:
 4. **On cache miss:**
    - Introspect table columns from `information_schema`
    - Build runtime Drizzle schema + Zod validation
-   - Generate CRUD router with OpenAPI routes
+   - Generate CRUD router with OpenAPI routes and typed query parameters
    - Cache router for subsequent requests
-5. **Route request** through generated router
+5. **Query parsing** extracts filters, sorting, pagination from query parameters
+6. **Query execution** builds and runs Drizzle ORM query with WHERE, ORDER BY, LIMIT, OFFSET
+7. **Caching** with SWR (stale-while-revalidate) pattern for fast responses
