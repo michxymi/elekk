@@ -12,7 +12,8 @@
     "test:run": "vitest run",
     "test:ui": "vitest --ui",
     "test:coverage": "vitest run --coverage",
-    "benchmark": "pnpm dlx tsx scripts/benchmark.ts"
+    "benchmark": "pnpm dlx tsx scripts/benchmark.ts",
+    "version": "conventional-changelog -p angular -i CHANGELOG.md -s && git add CHANGELOG.md"
   },
   "dependencies": {
     "@hono/swagger-ui": "^0.5.2",
@@ -31,6 +32,7 @@
     "@types/service-worker-mock": "^2.0.4",
     "@vitest/coverage-v8": "^4.0.13",
     "@vitest/ui": "^4.0.13",
+    "conventional-changelog-cli": "^5.0.0",
     "drizzle-kit": "^0.31.7",
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",
