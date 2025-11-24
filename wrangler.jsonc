@@ -20,7 +20,14 @@
 			"id": "f777a12d890b48a28afb3fb95f25660c",
 			"localConnectionString": "postgresql://postgres:test123@localhost:5432/elekk_test"
 		}
+	],
+	"kv_namespaces": [
+		{
+			"binding": "DATA_CACHE",
+			"id": "079e31f47c894c86b170ee39583a805e"
+		}
 	]
+,
 	/**
 	 * Smart Placement
 	 * Docs: https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement

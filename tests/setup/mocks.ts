@@ -9,7 +9,7 @@ export function createMockHyperdrive(
 ) {
   return {
     connectionString,
-  };
+  } as unknown as Hyperdrive;
 }
 
 /**
@@ -137,4 +137,32 @@ export function createDrizzleMockFactory(
   return {
     drizzle: vi.fn(() => mockDb),
   };
+}
+
+export function createMockDataCache() {
+  const storage = new Map<string, string>();
+  const cache = {
+    storage,
+    get: vi.fn((key: string) => Promise.resolve(storage.get(key) ?? null)),
+    put: vi.fn((key, value) => {
+      const stringValue =
+        typeof value === "string" ? value : JSON.stringify(value as never);
+      storage.set(key, stringValue);
+      return Promise.resolve();
+    }),
+    delete: vi.fn((key: string) => {
+      storage.delete(key);
+      return Promise.resolve(true);
+    }),
+    list: vi.fn(() =>
+      Promise.resolve({
+        keys: [],
+        list_complete: true,
+        cacheStatus: null,
+      })
+    ),
+    getWithMetadata: vi.fn(() => Promise.resolve(null)),
+  };
+
+  return cache as unknown as KVNamespace & { storage: Map<string, string> };
 }

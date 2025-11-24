@@ -1,12 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import app from "@/index";
+import app, {
+  getSchemaCacheKey,
+  HOT_CACHE,
+  validateSchemaCache,
+} from "@/index";
 import {
   SAMPLE_USERS,
   TEST_CONNECTION_STRING,
   TEST_TABLE_NAMES,
   USERS_TABLE_COLUMNS,
 } from "../setup/fixtures";
-import { createMockHyperdrive } from "../setup/mocks";
+import { createMockDataCache, createMockHyperdrive } from "../setup/mocks";
 
 // Mock all lib modules
 vi.mock("@/lib/introspector", () => ({
@@ -35,12 +39,22 @@ import {
 } from "@/lib/introspector";
 
 describe("Main Application (index.ts)", () => {
-  const mockEnv = {
-    HYPERDRIVE: createMockHyperdrive(TEST_CONNECTION_STRING),
+  let dataCache: ReturnType<typeof createMockDataCache>;
+  let mockEnv: {
+    HYPERDRIVE: ReturnType<typeof createMockHyperdrive>;
+    DATA_CACHE: ReturnType<typeof createMockDataCache>;
   };
 
   beforeEach(() => {
     vi.clearAllMocks();
+    dataCache = createMockDataCache();
+    mockEnv = {
+      HYPERDRIVE: createMockHyperdrive(TEST_CONNECTION_STRING),
+      DATA_CACHE: dataCache,
+    };
+    for (const key of Object.keys(HOT_CACHE)) {
+      delete HOT_CACHE[key];
+    }
   });
 
   describe("Cache Mechanism", () => {
@@ -139,7 +153,9 @@ describe("Main Application (index.ts)", () => {
       expect(mockRouter.fetch).toHaveBeenCalledTimes(1);
     });
 
-    it("should rebuild router when version changes (schema drift)", async () => {
+    it("should serve stale router immediately when HOT_CACHE hit (SWR behavior)", async () => {
+      // With SWR, we serve cached data immediately and validate in background.
+      // The rebuild happens on the NEXT request after cache invalidation.
       const mockRouter = {
         fetch: vi.fn().mockResolvedValue(
           new Response(JSON.stringify(SAMPLE_USERS), {
@@ -167,20 +183,23 @@ describe("Main Application (index.ts)", () => {
       vi.mocked(getTableConfig).mockClear();
       vi.mocked(buildRuntimeSchema).mockClear();
       vi.mocked(createCrudRouter).mockClear();
+      vi.mocked(getTableVersion).mockClear();
 
-      // Second request with version v2 (schema changed)
-      vi.mocked(getTableVersion).mockResolvedValue("v2");
-
+      // Second request - HOT_CACHE should serve immediately without DB call
+      // (background validation would invalidate if version changed)
       const req2 = new Request("http://localhost/api/users/", {
         method: "GET",
       });
       const res2 = await app.fetch(req2, mockEnv as never);
 
       expect(res2.status).toBe(200);
-      // These SHOULD be called because version changed
-      expect(getTableConfig).toHaveBeenCalledOnce();
-      expect(buildRuntimeSchema).toHaveBeenCalledOnce();
-      expect(createCrudRouter).toHaveBeenCalledOnce();
+      // With SWR, these should NOT be called - we serve from cache immediately
+      expect(getTableVersion).not.toHaveBeenCalled();
+      expect(getTableConfig).not.toHaveBeenCalled();
+      expect(buildRuntimeSchema).not.toHaveBeenCalled();
+      expect(createCrudRouter).not.toHaveBeenCalled();
+      // Router should be reused
+      expect(mockRouter.fetch).toHaveBeenCalledTimes(2);
     });
 
     it("should cache routers for different tables independently", async () => {
@@ -257,12 +276,14 @@ describe("Main Application (index.ts)", () => {
       expect(createCrudRouter).toHaveBeenCalledWith(
         "users",
         {},
-        TEST_CONNECTION_STRING
+        TEST_CONNECTION_STRING,
+        { env: mockEnv, schemaVersion: "v1" }
       );
       expect(createCrudRouter).toHaveBeenCalledWith(
         "products",
         {},
-        TEST_CONNECTION_STRING
+        TEST_CONNECTION_STRING,
+        { env: mockEnv, schemaVersion: "v1" }
       );
     });
 
@@ -398,6 +419,140 @@ describe("Main Application (index.ts)", () => {
       expect(getTableConfig).not.toHaveBeenCalled();
       expect(buildRuntimeSchema).not.toHaveBeenCalled();
       expect(createCrudRouter).not.toHaveBeenCalled();
+    });
+
+    it("should persist schema metadata to KV on cache miss", async () => {
+      const mockRouter = {
+        fetch: vi.fn().mockResolvedValue(
+          new Response(JSON.stringify(SAMPLE_USERS), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+        ),
+      };
+
+      vi.mocked(getTableVersion).mockResolvedValue("v1");
+      vi.mocked(getTableConfig).mockResolvedValue(USERS_TABLE_COLUMNS);
+      vi.mocked(buildRuntimeSchema).mockReturnValue({
+        table: {},
+        zodSchema: {} as never,
+      });
+      vi.mocked(createCrudRouter).mockReturnValue(mockRouter as never);
+
+      const req = new Request("http://localhost/api/users/", {
+        method: "GET",
+      });
+      await app.fetch(req, mockEnv as never);
+
+      const key = getSchemaCacheKey(TEST_TABLE_NAMES.USERS);
+      const putMock = vi.mocked(dataCache.put);
+      expect(putMock).toHaveBeenCalledWith(key, expect.any(String));
+
+      const storedValue = putMock.mock.calls[0]?.[1];
+      const payload = JSON.parse(
+        typeof storedValue === "string" ? storedValue : "{}"
+      );
+      expect(payload.version).toBe("v1");
+      expect(payload.columns).toEqual(USERS_TABLE_COLUMNS);
+    });
+
+    it("should rebuild router from KV when HOT cache is empty", async () => {
+      const mockRouter = {
+        fetch: vi.fn().mockResolvedValue(
+          new Response(JSON.stringify(SAMPLE_USERS), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+        ),
+      };
+
+      vi.mocked(getTableVersion).mockResolvedValue("v1");
+      vi.mocked(getTableConfig).mockResolvedValue(USERS_TABLE_COLUMNS);
+      vi.mocked(buildRuntimeSchema).mockReturnValue({
+        table: {},
+        zodSchema: {} as never,
+      });
+      vi.mocked(createCrudRouter).mockReturnValue(mockRouter as never);
+
+      const req = new Request("http://localhost/api/users/", {
+        method: "GET",
+      });
+      await app.fetch(req, mockEnv as never);
+
+      delete HOT_CACHE[TEST_TABLE_NAMES.USERS];
+
+      vi.mocked(getTableVersion).mockResolvedValue("v1");
+      vi.mocked(getTableConfig).mockClear();
+
+      const secondReq = new Request("http://localhost/api/users/", {
+        method: "GET",
+      });
+      const res = await app.fetch(secondReq, mockEnv as never);
+
+      expect(res.status).toBe(200);
+      expect(vi.mocked(dataCache.get)).toHaveBeenCalledWith(
+        getSchemaCacheKey(TEST_TABLE_NAMES.USERS)
+      );
+      expect(getTableConfig).not.toHaveBeenCalled();
+    });
+
+    it("should invalidate caches when schema validation detects drift", async () => {
+      const tableName = TEST_TABLE_NAMES.USERS;
+      HOT_CACHE[tableName] = {
+        router: {} as never,
+        version: "v1",
+      };
+      const key = getSchemaCacheKey(tableName);
+      dataCache.storage.set(
+        key,
+        JSON.stringify({
+          version: "v1",
+          columns: USERS_TABLE_COLUMNS,
+        })
+      );
+
+      vi.mocked(getTableVersion).mockResolvedValue("v2");
+
+      await validateSchemaCache(
+        mockEnv as never,
+        TEST_CONNECTION_STRING,
+        tableName,
+        "v1"
+      );
+
+      expect(vi.mocked(dataCache.delete)).toHaveBeenCalledWith(key);
+      expect(HOT_CACHE[tableName]).toBeUndefined();
+    });
+
+    it("should retain caches when schema validation finds no change", async () => {
+      const tableName = TEST_TABLE_NAMES.USERS;
+      HOT_CACHE[tableName] = {
+        router: {} as never,
+        version: "v1",
+      };
+      const key = getSchemaCacheKey(tableName);
+      dataCache.storage.set(
+        key,
+        JSON.stringify({
+          version: "v1",
+          columns: USERS_TABLE_COLUMNS,
+        })
+      );
+
+      vi.mocked(getTableVersion).mockResolvedValue("v1");
+
+      await validateSchemaCache(
+        mockEnv as never,
+        TEST_CONNECTION_STRING,
+        tableName,
+        "v1"
+      );
+
+      expect(vi.mocked(dataCache.delete)).not.toHaveBeenCalled();
+      expect(HOT_CACHE[tableName]).toEqual({
+        router: {} as never,
+        version: "v1",
+      });
     });
   });
 
@@ -675,7 +830,8 @@ describe("Main Application (index.ts)", () => {
       expect(createCrudRouter).toHaveBeenCalledWith(
         uniqueTable,
         {},
-        TEST_CONNECTION_STRING
+        TEST_CONNECTION_STRING,
+        { env: mockEnv, schemaVersion: "v1" }
       );
     });
 
@@ -890,7 +1046,9 @@ describe("Main Application (index.ts)", () => {
       // Verify servers
       const servers = spec.servers as Record<string, unknown>[];
       expect(servers).toHaveLength(1);
-      expect(servers[0].url).toBe("http://localhost");
+      const server = servers[0];
+      expect(server).toBeDefined();
+      expect(server?.url).toBe("http://localhost");
     });
 
     it("should bypass OpenAPI cache when X-Cache-Control: no-cache header is present", async () => {

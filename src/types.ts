@@ -1,6 +1,11 @@
 import type { Context } from "hono";
 import type { z } from "zod";
 
+export type Env = {
+  HYPERDRIVE: Hyperdrive;
+  DATA_CACHE?: KVNamespace;
+};
+
 export type AppContext = Context<{ Bindings: Env }>;
 
 export type ColumnConfig = {
