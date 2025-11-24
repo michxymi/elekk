@@ -69,6 +69,7 @@ describe("Query result caching (generator)", () => {
       {
         env,
         schemaVersion: "v1",
+        columns: USERS_TABLE_COLUMNS,
       }
     );
     const response = await router.fetch(
@@ -113,6 +114,7 @@ describe("Query result caching (generator)", () => {
       {
         env,
         schemaVersion: "v1",
+        columns: USERS_TABLE_COLUMNS,
       }
     );
     const response = await router.fetch(

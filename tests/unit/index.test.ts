@@ -277,13 +277,20 @@ describe("Main Application (index.ts)", () => {
         "users",
         {},
         TEST_CONNECTION_STRING,
-        { env: mockEnv, schemaVersion: "v1" }
+        { env: mockEnv, schemaVersion: "v1", columns: USERS_TABLE_COLUMNS }
       );
       expect(createCrudRouter).toHaveBeenCalledWith(
         "products",
         {},
         TEST_CONNECTION_STRING,
-        { env: mockEnv, schemaVersion: "v1" }
+        {
+          env: mockEnv,
+          schemaVersion: "v1",
+          columns: [
+            { name: "id", type: "integer", nullable: false },
+            { name: "name", type: "text", nullable: false },
+          ],
+        }
       );
     });
 
@@ -831,7 +838,7 @@ describe("Main Application (index.ts)", () => {
         uniqueTable,
         {},
         TEST_CONNECTION_STRING,
-        { env: mockEnv, schemaVersion: "v1" }
+        { env: mockEnv, schemaVersion: "v1", columns: USERS_TABLE_COLUMNS }
       );
     });
 

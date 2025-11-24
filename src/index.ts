@@ -93,6 +93,7 @@ const buildRouterFromColumns = (options: RouterBuildOptions) => {
   const router = createCrudRouter(tableName, table, connectionString, {
     env,
     schemaVersion,
+    columns,
   });
   return router;
 };
@@ -183,7 +184,9 @@ const buildOpenApiDocument = async (
       continue;
     }
     const { table } = buildRuntimeSchema(tableName, columns);
-    const router = createCrudRouter(tableName, table, connectionString);
+    const router = createCrudRouter(tableName, table, connectionString, {
+      columns,
+    });
 
     tempApp.route(`/api/${tableName}`, router);
   }
