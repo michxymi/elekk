@@ -330,6 +330,144 @@ async function benchmarkCacheHits(): Promise<void> {
 }
 
 /**
+ * Helper to measure cache behavior for a query
+ */
+async function measureQueryCacheBehavior(
+  url: string
+): Promise<{ coldMs: number; warmMs: number; speedup: number }> {
+  // Cold request (first time with these params)
+  const { duration: coldMs } = await timedRequest(url, {
+    headers: { "X-Cache-Control": "no-cache" },
+  });
+
+  // Small delay
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  // Warm request (should be cached)
+  const { duration: warmMs } = await timedRequest(url);
+
+  const speedup = coldMs / warmMs;
+  return { coldMs: Math.round(coldMs), warmMs: Math.round(warmMs), speedup };
+}
+
+/**
+ * Benchmark: Query parameter cache behavior
+ */
+async function benchmarkQueryParamCaching(): Promise<void> {
+  printSection("QUERY PARAMETER CACHING");
+
+  // Test filter caching
+  const filterResult = await measureQueryCacheBehavior(
+    `${API_BASE_URL}/api/users/?is_active=true`
+  );
+  const filterOk = filterResult.speedup >= 1.2;
+  console.log(
+    `${filterOk ? `${colors.green}✓` : `${colors.yellow}⚠`}${colors.reset} Filter: ?is_active=true`
+  );
+  console.log(
+    `  ${colors.blue}→${colors.reset} Cold: ${filterResult.coldMs}ms, Warm: ${filterResult.warmMs}ms, Speedup: ${colors.bright}${filterResult.speedup.toFixed(1)}x${colors.reset}`
+  );
+  recordBenchmark({
+    name: "Query cache: Filter",
+    passed: filterOk,
+    duration: filterResult.warmMs,
+    expected: ">= 1.2x speedup",
+    actual: `${filterResult.speedup.toFixed(1)}x`,
+  });
+
+  // Test sort caching
+  const sortResult = await measureQueryCacheBehavior(
+    `${API_BASE_URL}/api/users/?order_by=-created_at`
+  );
+  const sortOk = sortResult.speedup >= 1.2;
+  console.log(
+    `${sortOk ? `${colors.green}✓` : `${colors.yellow}⚠`}${colors.reset} Sort: ?order_by=-created_at`
+  );
+  console.log(
+    `  ${colors.blue}→${colors.reset} Cold: ${sortResult.coldMs}ms, Warm: ${sortResult.warmMs}ms, Speedup: ${colors.bright}${sortResult.speedup.toFixed(1)}x${colors.reset}`
+  );
+  recordBenchmark({
+    name: "Query cache: Sort",
+    passed: sortOk,
+    duration: sortResult.warmMs,
+    expected: ">= 1.2x speedup",
+    actual: `${sortResult.speedup.toFixed(1)}x`,
+  });
+
+  // Test pagination caching
+  const pageResult = await measureQueryCacheBehavior(
+    `${API_BASE_URL}/api/users/?limit=5&offset=0`
+  );
+  const pageOk = pageResult.speedup >= 1.2;
+  console.log(
+    `${pageOk ? `${colors.green}✓` : `${colors.yellow}⚠`}${colors.reset} Pagination: ?limit=5&offset=0`
+  );
+  console.log(
+    `  ${colors.blue}→${colors.reset} Cold: ${pageResult.coldMs}ms, Warm: ${pageResult.warmMs}ms, Speedup: ${colors.bright}${pageResult.speedup.toFixed(1)}x${colors.reset}`
+  );
+  recordBenchmark({
+    name: "Query cache: Pagination",
+    passed: pageOk,
+    duration: pageResult.warmMs,
+    expected: ">= 1.2x speedup",
+    actual: `${pageResult.speedup.toFixed(1)}x`,
+  });
+
+  // Test combined query caching
+  const comboResult = await measureQueryCacheBehavior(
+    `${API_BASE_URL}/api/users/?is_active=true&order_by=name&limit=10&select=id,name`
+  );
+  const comboOk = comboResult.speedup >= 1.2;
+  console.log(
+    `${comboOk ? `${colors.green}✓` : `${colors.yellow}⚠`}${colors.reset} Combined: ?is_active=true&order_by=name&limit=10&select=id,name`
+  );
+  console.log(
+    `  ${colors.blue}→${colors.reset} Cold: ${comboResult.coldMs}ms, Warm: ${comboResult.warmMs}ms, Speedup: ${colors.bright}${comboResult.speedup.toFixed(1)}x${colors.reset}`
+  );
+  recordBenchmark({
+    name: "Query cache: Combined query",
+    passed: comboOk,
+    duration: comboResult.warmMs,
+    expected: ">= 1.2x speedup",
+    actual: `${comboResult.speedup.toFixed(1)}x`,
+  });
+
+  // Test that different query params are cached separately
+  console.log(`\n${colors.cyan}Cache isolation test:${colors.reset}`);
+
+  // Warm up two different queries
+  await timedRequest(`${API_BASE_URL}/api/users/?limit=3`);
+  await timedRequest(`${API_BASE_URL}/api/users/?limit=5`);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  // Both should return correct results (not mixed cache)
+  const { response: res3 } = await timedRequest(
+    `${API_BASE_URL}/api/users/?limit=3`
+  );
+  const { response: res5 } = await timedRequest(
+    `${API_BASE_URL}/api/users/?limit=5`
+  );
+
+  const data3 = (await res3.json()) as unknown[];
+  const data5 = (await res5.json()) as unknown[];
+
+  const isolationOk = data3.length <= 3 && data5.length <= 5;
+  console.log(
+    `${isolationOk ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} Different params cached separately`
+  );
+  console.log(
+    `  ${colors.blue}→${colors.reset} ?limit=3 returned ${data3.length} records, ?limit=5 returned ${data5.length} records`
+  );
+  recordBenchmark({
+    name: "Query cache: Isolation",
+    passed: isolationOk,
+    duration: 0,
+    expected: "different params cached separately",
+    actual: isolationOk ? "correctly isolated" : "cache mixing detected",
+  });
+}
+
+/**
  * Benchmark: Cache speedup analysis
  */
 async function benchmarkCacheSpeedup(): Promise<void> {
@@ -750,6 +888,7 @@ async function main(): Promise<void> {
     await warmupDatabase();
     await benchmarkColdStart();
     await benchmarkCacheHits();
+    await benchmarkQueryParamCaching();
     await benchmarkCacheSpeedup();
     await benchmarkCrudOperations();
     await benchmarkGetQueryParams();
