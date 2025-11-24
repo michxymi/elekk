@@ -11,10 +11,13 @@
 	"observability": {
 		"enabled": true
 	},
+	"placement": {
+		"mode": "smart"
+	},
 	"hyperdrive": [
 		{
 			"binding": "HYPERDRIVE",
-			"id": "8dd2b1ba06f649f488a96cf194e51192",
+			"id": "f777a12d890b48a28afb3fb95f25660c",
 			"localConnectionString": "postgresql://postgres:test123@localhost:5432/elekk_test"
 		}
 	]
