@@ -49,8 +49,12 @@ The application follows a **schema-first, runtime-introspection** architecture:
    - Build runtime Drizzle schema + Zod validation via `buildRuntimeSchema()` (src/lib/builder.ts:25)
    - Generate CRUD router with OpenAPI routes and typed query params via `createCrudRouter()` (src/lib/generator.ts)
    - Cache router for subsequent requests
-5. **Query parameter parsing** via `parseQueryParams()` extracts filters, sorting, pagination
-6. **Query building** via `executeQuery()` constructs Drizzle ORM query with WHERE, ORDER BY, LIMIT, OFFSET
+5. **Query parameter parsing**
+   - GET: `parseQueryParams()` extracts filters, sorting, pagination
+   - POST: `parseInsertParams()` extracts returning fields, on_conflict configuration
+6. **Query building**
+   - GET: `executeQuery()` constructs Drizzle ORM query with WHERE, ORDER BY, LIMIT, OFFSET
+   - POST: `executeInsert()` constructs INSERT with optional ON CONFLICT and RETURNING clauses
 7. **Data caching** with SWR pattern - stale data served immediately, fresh data fetched in background
 
 ### Core Modules
@@ -78,22 +82,35 @@ The application follows a **schema-first, runtime-introspection** architecture:
 **src/lib/generator.ts** - CRUD router generation
 - Creates OpenAPIHono router with auto-generated endpoints
 - Generates Zod schemas for request/response validation via drizzle-zod
-- Generates fully-typed query parameter schemas based on column metadata
-- Implements: GET / (list with filtering/sorting/pagination), POST / (create)
+- Generates fully-typed query parameter schemas based on column metadata for GET and POST
+- `buildQueryParamsSchema()` - Generates GET query params schema with OpenAPI decorators
+- `buildInsertParamsSchema()` - Generates POST query params schema (returning, on_conflict) with OpenAPI decorators
+- Implements: GET / (list with filtering/sorting/pagination), POST / (create with upsert support)
 - TODO: Add GET /:id, PUT /:id, DELETE /:id endpoints
 
-**src/lib/query-params.ts** - Query parameter parsing
+**src/lib/query-params.ts** - GET query parameter parsing
 - `parseQueryParams()` - Parses query string into structured `ParsedQuery` object
 - `parseFilterKey()` - Extracts field name and operator from param keys (e.g., `age__gt` → field: `age`, operator: `gt`)
 - `coerceValue()` - Type coercion based on PostgreSQL column types
 - `generateQueryCacheKey()` - Creates deterministic cache keys for query results
 - Supports operators: `eq`, `gt`, `gte`, `lt`, `lte`, `like`, `ilike`, `in`, `isnull`
 
-**src/lib/query-builder.ts** - Drizzle ORM query construction
+**src/lib/query-builder.ts** - Drizzle ORM SELECT query construction
 - `buildWhereClause()` - Converts filter conditions to Drizzle SQL expressions
 - `buildOrderByClause()` - Converts sort directives to Drizzle order expressions
 - `buildSelectColumns()` - Builds partial field selection for queries
 - `executeQuery()` - Main entry point for executing filtered/sorted/paginated queries
+
+**src/lib/insert-params.ts** - POST query parameter parsing
+- `parseInsertParams()` - Parses POST query string into structured `ParsedInsertParams` object
+- `parseReturningParam()` - Parses returning field selection (e.g., `returning=id,name`)
+- `parseOnConflictParams()` - Parses on_conflict configuration for upsert behavior
+- `hasInsertParams()` - Checks if parsed params have any active configuration
+
+**src/lib/insert-builder.ts** - Drizzle ORM INSERT query construction
+- `buildReturningColumns()` - Builds column map for selective RETURNING clause
+- `buildUpdateSet()` - Builds update set for ON CONFLICT DO UPDATE using EXCLUDED values
+- `executeInsert()` - Main entry point for executing INSERT with returning/onConflict support
 
 **src/lib/data-cache.ts** - KV caching utilities
 - `readCachedQueryResult()` / `writeCachedQueryResult()` - Query result caching
@@ -175,6 +192,8 @@ Example: `GET https://your-worker.workers.dev/api/users/` returns all users from
 
 ### Query Parameter Syntax
 
+#### GET Query Parameters
+
 **Filtering (WHERE clauses):**
 - `?field=value` - equality (e.g., `?name=John`)
 - `?field__gt=5` - greater than
@@ -197,6 +216,24 @@ Example: `GET https://your-worker.workers.dev/api/users/` returns all users from
 
 **Field Selection (SELECT):**
 - `?select=id,name,email` - only return specified fields
+
+#### POST Query Parameters (Upsert Support)
+
+**Selective RETURNING:**
+- `?returning=id,name,email` - only return specified fields after INSERT
+
+**ON CONFLICT (Upsert):**
+- `?on_conflict=email` - column to check for conflicts (must have UNIQUE constraint)
+- `?on_conflict_action=nothing` - skip insert on conflict (DO NOTHING)
+- `?on_conflict_update=name,updated_at` - columns to update on conflict (DO UPDATE)
+
+**Combined Upsert Example:**
+```
+POST /api/users/?on_conflict=email&on_conflict_update=name,updated_at&returning=id,email
+```
+Maps to: `INSERT ... ON CONFLICT (email) DO UPDATE SET name=EXCLUDED.name, updated_at=EXCLUDED.updated_at RETURNING id, email`
+
+**Important:** The `on_conflict` column must have a UNIQUE constraint in the database.
 
 All query parameters are typed per-table based on introspected column metadata and appear in Swagger UI.
 

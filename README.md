@@ -8,6 +8,7 @@ Elekk is a Cloudflare Worker that provides auto-generated REST APIs with OpenAPI
 - ⚡ Hot-caching with schema drift detection (SWR pattern)
 - 🎯 Zero-config CRUD endpoints for any table
 - 🔍 SQL-like query parameters (filtering, sorting, pagination)
+- 🔄 Upsert support via POST query params (ON CONFLICT)
 - 🔌 PostgreSQL via Cloudflare Hyperdrive
 
 **Tech Stack:** Cloudflare Workers, Hono, @hono/zod-openapi, Drizzle ORM, Zod
@@ -32,8 +33,10 @@ src/
     ├── introspector.ts   # Database schema introspection
     ├── builder.ts        # Runtime schema construction
     ├── generator.ts      # CRUD router generation
-    ├── query-params.ts   # Query parameter parsing
-    ├── query-builder.ts  # Drizzle ORM query construction
+    ├── query-params.ts   # GET query parameter parsing
+    ├── query-builder.ts  # Drizzle ORM SELECT query construction
+    ├── insert-params.ts  # POST query parameter parsing (upsert)
+    ├── insert-builder.ts # Drizzle ORM INSERT query construction
     └── data-cache.ts     # KV caching utilities
 ```
 
@@ -61,12 +64,12 @@ docker run --name elekk-postgres \
 Create sample tables with test data:
 
 ```bash
-# Create users table
+# Create users table (with UNIQUE constraint on email for upsert support)
 docker exec -i elekk-postgres psql -U postgres -d elekk_test <<EOF
 CREATE TABLE users (
   id SERIAL PRIMARY KEY,
   name TEXT NOT NULL,
-  email TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
   is_active BOOLEAN DEFAULT true,
   created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
@@ -195,7 +198,56 @@ curl "http://localhost:8787/api/users/?is_active=true&order_by=name&limit=10&sel
 
 All query parameters are fully documented in the OpenAPI spec and appear in Swagger UI with proper types and descriptions.
 
-### Step 7: Test Schema Drift Detection
+### Step 7: POST Query Parameters (Upsert)
+
+Elekk also supports SQL-like query parameters for POST requests, enabling control over RETURNING fields and upsert (ON CONFLICT) behavior:
+
+**Selective RETURNING:**
+```bash
+# Return only specific fields after INSERT
+curl -X POST "http://localhost:8787/api/users/?returning=id,name" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"New User","email":"new@example.com","is_active":true}'
+```
+
+**ON CONFLICT DO NOTHING (Skip on duplicate):**
+```bash
+# Skip insert if email already exists (requires UNIQUE constraint on email)
+curl -X POST "http://localhost:8787/api/users/?on_conflict=email&on_conflict_action=nothing" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Maybe New","email":"existing@example.com","is_active":true}'
+```
+
+**ON CONFLICT DO UPDATE (Upsert):**
+```bash
+# Update name and is_active if email already exists
+curl -X POST "http://localhost:8787/api/users/?on_conflict=email&on_conflict_update=name,is_active" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Updated Name","email":"existing@example.com","is_active":false}'
+```
+
+**Combined Example (Upsert with selective return):**
+```bash
+# Upsert user, return only id and email
+curl -X POST "http://localhost:8787/api/users/?returning=id,email&on_conflict=email&on_conflict_update=name" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Upserted User","email":"user@example.com","is_active":true}'
+```
+
+| Query Param | SQL Equivalent | Description |
+|-------------|----------------|-------------|
+| `returning=id,name` | `RETURNING id, name` | Select which fields to return after INSERT |
+| `on_conflict=email` | `ON CONFLICT (email)` | Column to check for conflicts (must be UNIQUE) |
+| `on_conflict_action=nothing` | `DO NOTHING` | Skip insert on conflict |
+| `on_conflict_update=name,age` | `DO UPDATE SET name=EXCLUDED.name, age=EXCLUDED.age` | Update specified columns on conflict |
+
+**Important:** The `on_conflict` column **must** have a UNIQUE constraint in your database for upsert to work. Without it, PostgreSQL will return an error. To add a unique constraint:
+
+```sql
+ALTER TABLE users ADD CONSTRAINT users_email_unique UNIQUE (email);
+```
+
+### Step 8: Test Schema Drift Detection
 
 Modify the database schema and watch Elekk automatically detect changes:
 
@@ -317,6 +369,10 @@ Deploy read replicas closer to users for global low latency:
    - Build runtime Drizzle schema + Zod validation
    - Generate CRUD router with OpenAPI routes and typed query parameters
    - Cache router for subsequent requests
-5. **Query parsing** extracts filters, sorting, pagination from query parameters
-6. **Query execution** builds and runs Drizzle ORM query with WHERE, ORDER BY, LIMIT, OFFSET
+5. **Query parsing**
+   - GET: extracts filters, sorting, pagination from query parameters
+   - POST: extracts returning fields, on_conflict configuration for upserts
+6. **Query execution**
+   - GET: builds Drizzle ORM query with WHERE, ORDER BY, LIMIT, OFFSET
+   - POST: builds INSERT with optional ON CONFLICT and RETURNING clauses
 7. **Caching** with SWR (stale-while-revalidate) pattern for fast responses
