@@ -1,4 +1,3 @@
-import { swaggerUI } from "@hono/swagger-ui";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { buildRuntimeSchema } from "@/lib/builder";
 import { createCrudRouter } from "@/lib/generator";
@@ -126,6 +125,9 @@ app.get("/openapi.json", async (c) => {
   // 5. Generate CRUD router for each table and merge into temp app
   for (const tableName of tables) {
     const columns = schemaConfig[tableName];
+    if (!columns) {
+      continue; // Skip if columns are undefined (shouldn't happen)
+    }
     const { table } = buildRuntimeSchema(tableName, columns);
     const router = createCrudRouter(tableName, table, connectionString);
 
@@ -156,7 +158,12 @@ app.get("/openapi.json", async (c) => {
   return c.json(spec);
 });
 
-// Swagger UI
-app.get("/docs", swaggerUI({ url: "/openapi.json" }));
+// Swagger UI - Lazy loaded to reduce cold start time
+app.get("/docs", async (c, next) => {
+  const { swaggerUI } = await import("@hono/swagger-ui");
+  const handler = swaggerUI({ url: "/openapi.json" });
+  // biome-ignore lint/suspicious/noExplicitAny: Hono context types are incompatible between libraries
+  return handler(c as any, next);
+});
 
 export default app;
