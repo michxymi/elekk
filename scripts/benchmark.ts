@@ -4,7 +4,9 @@
  * Elekk Performance Benchmark Suite
  *
  * Comprehensive performance benchmarks for the deployed Elekk API.
- * Benchmarks cache behavior, introspection overhead, and CRUD operations.
+ * Benchmarks cache behavior, introspection overhead, CRUD operations,
+ * GET query parameters (filtering, sorting, pagination, field selection),
+ * and POST query parameters (returning, on_conflict upsert).
  *
  * Performance Targets:
  * These targets are calibrated for transatlantic latency (UK → US-East-1):
@@ -437,6 +439,221 @@ async function benchmarkCrudOperations(): Promise<void> {
 }
 
 /**
+ * Helper to run a single GET query benchmark
+ */
+async function runGetQueryBenchmark(
+  name: string,
+  url: string,
+  logExtra?: (data: unknown) => string
+): Promise<void> {
+  const { response, duration } = await timedRequest(url);
+  const ok = response.ok;
+  console.log(
+    `${ok ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} GET ${url.replace(API_BASE_URL ?? "", "")} → ${formatDuration(duration, 300)} ${ok ? "✓" : "✗"}`
+  );
+  if (ok && logExtra) {
+    const data = await response.json();
+    console.log(`  ${colors.blue}→${colors.reset} ${logExtra(data)}`);
+  }
+  recordBenchmark({
+    name,
+    passed: ok,
+    duration,
+    expected: "status 200",
+    actual: `status ${response.status}`,
+  });
+}
+
+/**
+ * Benchmark: GET query parameters (filtering, sorting, pagination, field selection)
+ */
+async function benchmarkGetQueryParams(): Promise<void> {
+  printSection("GET QUERY PARAMETERS");
+
+  // Filter by equality
+  await runGetQueryBenchmark(
+    "Query: Filter by equality",
+    `${API_BASE_URL}/api/users/?is_active=true`,
+    (data) => `Filtered to ${(data as unknown[]).length} active users`
+  );
+
+  // Sorting (ORDER BY)
+  await runGetQueryBenchmark(
+    "Query: Sorting (ORDER BY)",
+    `${API_BASE_URL}/api/users/?order_by=-created_at,name`
+  );
+
+  // Pagination (LIMIT/OFFSET)
+  await runGetQueryBenchmark(
+    "Query: Pagination (LIMIT/OFFSET)",
+    `${API_BASE_URL}/api/users/?limit=5&offset=0`,
+    (data) => `Retrieved ${(data as unknown[]).length} users (limit 5)`
+  );
+
+  // Field selection (SELECT)
+  await runGetQueryBenchmark(
+    "Query: Field selection (SELECT)",
+    `${API_BASE_URL}/api/users/?select=id,name,email`,
+    (data) => {
+      const arr = data as Record<string, unknown>[];
+      if (arr.length > 0) {
+        return `Returned fields: ${Object.keys(arr[0]).join(", ")}`;
+      }
+      return "No records returned";
+    }
+  );
+
+  // Combined query (filter + sort + limit + select)
+  await runGetQueryBenchmark(
+    "Query: Combined filter+sort+limit+select",
+    `${API_BASE_URL}/api/users/?is_active=true&order_by=-created_at&limit=3&select=id,name`,
+    (data) => `Combined query returned ${(data as unknown[]).length} users`
+  );
+}
+
+/**
+ * Benchmark: POST query parameters (returning, on_conflict)
+ *
+ * Note: ON CONFLICT tests require a UNIQUE constraint on the target column.
+ * If these tests fail with 500 errors, ensure your table has:
+ *   ALTER TABLE users ADD CONSTRAINT users_email_unique UNIQUE (email);
+ */
+async function benchmarkPostQueryParams(): Promise<void> {
+  printSection("POST QUERY PARAMETERS (UPSERT)");
+  console.log(
+    `${colors.yellow}Note: ON CONFLICT tests require UNIQUE constraint on email column${colors.reset}\n`
+  );
+
+  const timestamp = Date.now();
+
+  // POST with returning param (selective RETURNING)
+  const testUser1 = {
+    name: `Benchmark User ${timestamp}`,
+    email: `benchmark-returning-${timestamp}@example.com`,
+    is_active: true,
+  };
+
+  const { response: retRes, duration: retDuration } = await timedRequest(
+    `${API_BASE_URL}/api/users/?returning=id,name,email`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(testUser1),
+    }
+  );
+  const retOk = retRes.ok;
+  console.log(
+    `${retOk ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} POST /api/users/?returning=id,name,email → ${formatDuration(retDuration, 500)} ${retOk ? "✓" : "✗"}`
+  );
+  if (retOk) {
+    const data = (await retRes.json()) as Record<string, unknown>;
+    const fields = Object.keys(data);
+    console.log(
+      `  ${colors.blue}→${colors.reset} Returned fields: ${fields.join(", ")}`
+    );
+  }
+  recordBenchmark({
+    name: "POST: Selective RETURNING",
+    passed: retOk,
+    duration: retDuration,
+    expected: "status 201",
+    actual: `status ${retRes.status}`,
+    error: retOk ? undefined : await retRes.clone().text(),
+  });
+
+  // POST with on_conflict DO NOTHING (upsert - skip duplicate)
+  const testUser2 = {
+    name: `Benchmark Upsert ${timestamp}`,
+    email: `benchmark-upsert-${timestamp}@example.com`,
+    is_active: true,
+  };
+
+  // First insert
+  await timedRequest(`${API_BASE_URL}/api/users/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(testUser2),
+  });
+
+  // Second insert with same email (should be skipped)
+  const { response: nothingRes, duration: nothingDuration } =
+    await timedRequest(
+      `${API_BASE_URL}/api/users/?on_conflict=email&on_conflict_action=nothing`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...testUser2,
+          name: "Should Not Update",
+        }),
+      }
+    );
+  const nothingOk = nothingRes.ok;
+  console.log(
+    `${nothingOk ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} POST /api/users/?on_conflict=email&on_conflict_action=nothing → ${formatDuration(nothingDuration, 500)} ${nothingOk ? "✓" : "✗"}`
+  );
+  if (nothingOk) {
+    const data = await nothingRes.json();
+    console.log(
+      `  ${colors.blue}→${colors.reset} Conflict handled: ${JSON.stringify(data).slice(0, 60)}...`
+    );
+  }
+  recordBenchmark({
+    name: "POST: ON CONFLICT DO NOTHING",
+    passed: nothingOk,
+    duration: nothingDuration,
+    expected: "status 200 or 201",
+    actual: `status ${nothingRes.status}`,
+    error: nothingOk ? undefined : await nothingRes.clone().text(),
+  });
+
+  // POST with on_conflict DO UPDATE (upsert - update on duplicate)
+  const testUser3 = {
+    name: `Benchmark Update ${timestamp}`,
+    email: `benchmark-update-${timestamp}@example.com`,
+    is_active: true,
+  };
+
+  // First insert
+  await timedRequest(`${API_BASE_URL}/api/users/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(testUser3),
+  });
+
+  // Second insert with same email (should update name)
+  const { response: updateRes, duration: updateDuration } = await timedRequest(
+    `${API_BASE_URL}/api/users/?on_conflict=email&on_conflict_update=name&returning=id,name,email`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...testUser3,
+        name: "Updated Name via Upsert",
+      }),
+    }
+  );
+  const updateOk = updateRes.ok;
+  console.log(
+    `${updateOk ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} POST /api/users/?on_conflict=email&on_conflict_update=name → ${formatDuration(updateDuration, 500)} ${updateOk ? "✓" : "✗"}`
+  );
+  if (updateOk) {
+    const data = (await updateRes.json()) as Record<string, unknown>;
+    console.log(
+      `  ${colors.blue}→${colors.reset} Upserted user: ${data.name ?? "(no name returned)"}`
+    );
+  }
+  recordBenchmark({
+    name: "POST: ON CONFLICT DO UPDATE",
+    passed: updateOk,
+    duration: updateDuration,
+    expected: "status 201",
+    actual: `status ${updateRes.status}`,
+    error: updateOk ? undefined : await updateRes.clone().text(),
+  });
+}
+
+/**
  * Benchmark: Concurrent load
  */
 async function benchmarkConcurrentLoad(): Promise<void> {
@@ -535,6 +752,8 @@ async function main(): Promise<void> {
     await benchmarkCacheHits();
     await benchmarkCacheSpeedup();
     await benchmarkCrudOperations();
+    await benchmarkGetQueryParams();
+    await benchmarkPostQueryParams();
     await benchmarkConcurrentLoad();
   } catch (error) {
     console.error(

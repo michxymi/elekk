@@ -195,8 +195,22 @@ describe("createCrudRouter", () => {
     });
   });
 
-  // Note: POST endpoint tests are omitted due to complex Zod validation from drizzle-zod + @hono/zod-openapi
-  // These require integration testing with a real database to properly validate request bodies
+  // Note: POST endpoint tests with request bodies are omitted due to complex Zod
+  // validation from drizzle-zod + @hono/zod-openapi. These require integration
+  // testing with a real database to properly validate request bodies.
+  //
+  // The insert-params module is fully tested in insert-params.test.ts which
+  // validates the query parameter parsing logic independently.
+  //
+  // Key behaviors tested in insert-params.test.ts:
+  // - parseReturningParam() correctly parses returning=id,name
+  // - parseOnConflictParams() correctly parses on_conflict, on_conflict_action, on_conflict_update
+  // - parseInsertParams() combines all params with column validation
+  // - Invalid columns are filtered out
+  // - hasInsertParams() detects when params are present
+  //
+  // For full POST endpoint testing with query params, use integration tests
+  // with a real PostgreSQL database.;
 
   describe("OpenAPI Schema Generation", () => {
     it("should generate valid OpenAPI routes", () => {

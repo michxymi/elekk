@@ -10,6 +10,8 @@ import {
   readCachedQueryResult,
   writeCachedQueryResult,
 } from "@/lib/data-cache";
+import { executeInsert } from "@/lib/insert-builder";
+import { hasInsertParams, parseInsertParams } from "@/lib/insert-params";
 import { executeQuery } from "@/lib/query-builder";
 import {
   type FilterOperator,
@@ -298,6 +300,69 @@ const getOperatorDescription = (op: FilterOperator): string => {
 };
 
 /**
+ * Generates a Zod schema for INSERT query parameters with OpenAPI documentation
+ *
+ * Creates parameters for controlling INSERT behavior:
+ * - returning: Select which fields to return after INSERT
+ * - on_conflict: Column to check for conflicts (upsert)
+ * - on_conflict_action: Action on conflict ('nothing' for DO NOTHING)
+ * - on_conflict_update: Columns to update on conflict (DO UPDATE)
+ *
+ * @param columns - Array of column configurations from database introspection
+ * @returns Zod schema for INSERT query parameters with OpenAPI decorators
+ */
+const buildInsertParamsSchema = (columns: ColumnConfig[]) => {
+  const columnNames = columns.map((c) => c.name).join(",");
+  const shape: Record<string, z.ZodTypeAny> = {};
+
+  // returning - Select which fields to return after INSERT
+  shape.returning = z
+    .string()
+    .optional()
+    .openapi({
+      param: { name: "returning", in: "query" },
+      description:
+        "Comma-separated list of fields to return after INSERT (RETURNING clause)",
+      example: columnNames.slice(0, 50),
+    });
+
+  // on_conflict - Column to check for conflicts (must be unique/pk)
+  shape.on_conflict = z
+    .string()
+    .optional()
+    .openapi({
+      param: { name: "on_conflict", in: "query" },
+      description:
+        "Column to check for conflicts (must have UNIQUE constraint). Enables upsert behavior.",
+      example: "email",
+    });
+
+  // on_conflict_action - Action to take on conflict
+  shape.on_conflict_action = z
+    .enum(["nothing", "update"])
+    .optional()
+    .openapi({
+      param: { name: "on_conflict_action", in: "query" },
+      description:
+        "Action on conflict: 'nothing' (skip insert) or 'update' (requires on_conflict_update)",
+      example: "nothing",
+    });
+
+  // on_conflict_update - Columns to update on conflict
+  shape.on_conflict_update = z
+    .string()
+    .optional()
+    .openapi({
+      param: { name: "on_conflict_update", in: "query" },
+      description:
+        "Comma-separated columns to update on conflict (uses EXCLUDED values). Implies on_conflict_action=update.",
+      example: "name,updated_at",
+    });
+
+  return z.object(shape);
+};
+
+/**
  * Generates an OpenAPI-compliant CRUD router for a database table
  *
  * Creates GET (list with filtering/sorting/pagination) and POST (create) endpoints
@@ -330,6 +395,7 @@ export function createCrudRouter(
   }) as unknown as z.ZodTypeAny;
 
   const queryParamsSchema = buildQueryParamsSchema(columns);
+  const insertParamsSchema = buildInsertParamsSchema(columns);
 
   const cacheKv = options.env?.DATA_CACHE;
   const schemaVersion = options.schemaVersion;
@@ -411,26 +477,63 @@ export function createCrudRouter(
     }
   );
 
-  // POST / (Create)
+  // POST / (Create with optional upsert via query params)
   app.openapi(
     createRoute({
       method: "post",
       path: "/",
       tags: [tableName],
       request: {
+        query: insertParamsSchema,
         body: { content: { "application/json": { schema: insertSchema } } },
       },
-      responses: { 201: { description: "Created" } },
+      responses: {
+        200: {
+          content: { "application/json": { schema: selectSchema } },
+          description: "Record updated (upsert with ON CONFLICT DO UPDATE)",
+        },
+        201: {
+          content: { "application/json": { schema: selectSchema } },
+          description: "Record created",
+        },
+      },
     }),
     async (c) => {
       const client = postgres(connectionString);
       const db = drizzle(client);
       const body = await c.req.json();
-      const result = (await db
-        .insert(table as never)
-        .values(body)
-        .returning()) as unknown[];
+
+      // Parse INSERT query parameters
+      const rawQuery = c.req.query();
+      const insertParams = parseInsertParams(rawQuery, columns);
+
+      let result: unknown[];
+
+      if (hasInsertParams(insertParams)) {
+        // Use enhanced insert with returning/onConflict support
+        result = await executeInsert({
+          db,
+          table: table as PgTable,
+          data: body,
+          params: insertParams,
+        });
+      } else {
+        // Simple insert without special params
+        result = (await db
+          .insert(table as never)
+          .values(body)
+          .returning()) as unknown[];
+      }
+
+      // Handle ON CONFLICT DO NOTHING case - may return empty array
       if (result.length === 0) {
+        // For DO NOTHING, return 200 with empty body to indicate no insert
+        if (insertParams.onConflict?.action === "nothing") {
+          return c.json(
+            { message: "Conflict detected, no insert performed" },
+            200
+          );
+        }
         return c.json({ error: "Insert failed" }, 500);
       }
 
@@ -445,6 +548,9 @@ export function createCrudRouter(
         // query caches, we would need to track cache keys per table.
       }
 
+      // Return 200 for upsert updates, 201 for new inserts
+      // Note: We can't easily distinguish between insert and update with Drizzle,
+      // so we return 201 for all successful inserts/upserts
       return c.json(result[0], 201);
     }
   );

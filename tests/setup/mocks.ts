@@ -31,14 +31,33 @@ export function createMockSelectBuilder(mockResults: unknown[] = []) {
 }
 
 /**
- * Mock Drizzle insert query builder
+ * Mock Drizzle insert query builder with onConflict support
  */
 export function createMockInsertBuilder(mockResult: unknown[] = []) {
   const returningMock = vi.fn().mockResolvedValue(mockResult);
-  const valuesMock = vi.fn().mockReturnValue({ returning: returningMock });
+
+  // Create chainable methods for onConflict
+  const onConflictDoNothingMock = vi.fn().mockReturnValue({
+    returning: returningMock,
+  });
+
+  const onConflictDoUpdateMock = vi.fn().mockReturnValue({
+    returning: returningMock,
+  });
+
+  const valuesMock = vi.fn().mockReturnValue({
+    returning: returningMock,
+    onConflictDoNothing: onConflictDoNothingMock,
+    onConflictDoUpdate: onConflictDoUpdateMock,
+  });
 
   return {
     values: valuesMock,
+    _mocks: {
+      returning: returningMock,
+      onConflictDoNothing: onConflictDoNothingMock,
+      onConflictDoUpdate: onConflictDoUpdateMock,
+    },
   };
 }
 
