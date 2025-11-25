@@ -62,6 +62,53 @@ export function createMockInsertBuilder(mockResult: unknown[] = []) {
 }
 
 /**
+ * Mock Drizzle delete query builder
+ */
+export function createMockDeleteBuilder(mockResult: unknown[] = []) {
+  const returningMock = vi.fn().mockResolvedValue(mockResult);
+
+  const whereMock = vi.fn().mockReturnValue({
+    returning: returningMock,
+  });
+
+  return {
+    where: whereMock,
+    returning: returningMock,
+    _mocks: {
+      returning: returningMock,
+      where: whereMock,
+    },
+  };
+}
+
+/**
+ * Mock Drizzle update query builder (for soft delete)
+ */
+export function createMockUpdateBuilder(mockResult: unknown[] = []) {
+  const returningMock = vi.fn().mockResolvedValue(mockResult);
+
+  const whereMock = vi.fn().mockReturnValue({
+    returning: returningMock,
+  });
+
+  const setMock = vi.fn().mockReturnValue({
+    where: whereMock,
+    returning: returningMock,
+  });
+
+  return {
+    set: setMock,
+    where: whereMock,
+    returning: returningMock,
+    _mocks: {
+      returning: returningMock,
+      where: whereMock,
+      set: setMock,
+    },
+  };
+}
+
+/**
  * Mock Drizzle database instance
  */
 export function createMockDrizzleDb(
@@ -69,14 +116,24 @@ export function createMockDrizzleDb(
     executeResult?: unknown[];
     selectResult?: unknown[];
     insertResult?: unknown[];
+    deleteResult?: unknown[];
+    updateResult?: unknown[];
   } = {}
 ) {
-  const { executeResult = [], selectResult = [], insertResult = [] } = options;
+  const {
+    executeResult = [],
+    selectResult = [],
+    insertResult = [],
+    deleteResult = [],
+    updateResult = [],
+  } = options;
 
   return {
     execute: vi.fn().mockResolvedValue(executeResult),
     select: vi.fn().mockReturnValue(createMockSelectBuilder(selectResult)),
     insert: vi.fn().mockReturnValue(createMockInsertBuilder(insertResult)),
+    delete: vi.fn().mockReturnValue(createMockDeleteBuilder(deleteResult)),
+    update: vi.fn().mockReturnValue(createMockUpdateBuilder(updateResult)),
   };
 }
 

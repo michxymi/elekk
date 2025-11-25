@@ -14,6 +14,8 @@ import {
   getTableVersion,
   setTableVersion,
 } from "@/lib/data-cache";
+import { executeDelete, executeDeleteById } from "@/lib/delete-builder";
+import { detectSoftDeleteColumn, parseDeleteParams } from "@/lib/delete-params";
 import { executeInsert } from "@/lib/insert-builder";
 import { hasInsertParams, parseInsertParams } from "@/lib/insert-params";
 import { executeQuery } from "@/lib/query-builder";
@@ -353,6 +355,51 @@ const buildInsertParamsSchema = (columns: ColumnConfig[]) => {
 };
 
 /**
+ * Generates a Zod schema for DELETE query parameters with OpenAPI documentation
+ *
+ * Creates parameters for controlling DELETE behavior:
+ * - All filter parameters (same as GET)
+ * - returning: Select which fields to return after DELETE
+ * - hard_delete: Force hard delete even if table has soft delete column
+ *
+ * @param columns - Array of column configurations from database introspection
+ * @returns Zod schema for DELETE query parameters with OpenAPI decorators
+ */
+const buildDeleteParamsSchema = (columns: ColumnConfig[]) => {
+  const columnNames = columns.map((c) => c.name).join(",");
+  const shape: Record<string, z.ZodTypeAny> = {};
+
+  // Add all filter parameters (same as GET)
+  for (const column of columns) {
+    addColumnFilters(shape, column);
+  }
+
+  // returning - Select which fields to return after DELETE
+  shape.returning = z
+    .string()
+    .optional()
+    .openapi({
+      param: { name: "returning", in: "query" },
+      description:
+        "Comma-separated list of fields to return after DELETE (RETURNING clause)",
+      example: columnNames.slice(0, 50),
+    });
+
+  // hard_delete - Force hard delete even if table has soft delete column
+  shape.hard_delete = z
+    .string()
+    .optional()
+    .openapi({
+      param: { name: "hard_delete", in: "query" },
+      description:
+        "Force hard delete (actual row deletion) even if table has a deleted_at column for soft delete. Set to 'true' or '1' to enable.",
+      example: "true",
+    });
+
+  return z.object(shape);
+};
+
+/**
  * Generates a query key for cache URL from parsed query parameters
  */
 const generateCacheQueryKey = (
@@ -613,6 +660,161 @@ export function createCrudRouter(
       // Note: We can't easily distinguish between insert and update with Drizzle,
       // so we return 201 for all successful inserts/upserts
       return c.json(result[0], 201);
+    }
+  );
+
+  // DELETE /:id (Delete single record by primary key)
+  const deleteByIdParamsSchema = z.object({
+    returning: z
+      .string()
+      .optional()
+      .openapi({
+        param: { name: "returning", in: "query" },
+        description:
+          "Comma-separated list of fields to return after DELETE (RETURNING clause)",
+        example: columns
+          .map((c) => c.name)
+          .join(",")
+          .slice(0, 50),
+      }),
+    hard_delete: z
+      .string()
+      .optional()
+      .openapi({
+        param: { name: "hard_delete", in: "query" },
+        description: "Force hard delete even if table has soft delete column",
+        example: "true",
+      }),
+  });
+
+  const softDeleteColumn = detectSoftDeleteColumn(columns);
+
+  app.openapi(
+    createRoute({
+      method: "delete",
+      path: "/{id}",
+      tags: [tableName],
+      request: {
+        params: z.object({
+          id: z.string().openapi({
+            param: { name: "id", in: "path" },
+            description: "Record ID to delete",
+            example: "1",
+          }),
+        }),
+        query: deleteByIdParamsSchema,
+      },
+      responses: {
+        200: {
+          content: { "application/json": { schema: selectSchema } },
+          description: "Deleted record (with returning)",
+        },
+        204: {
+          description: "Record deleted successfully (no returning)",
+        },
+        404: {
+          content: {
+            "application/json": {
+              schema: z.object({ error: z.string() }),
+            },
+          },
+          description: "Record not found",
+        },
+      },
+    }),
+    async (c) => {
+      const client = postgres(connectionString);
+      const db = drizzle(client);
+      const id = c.req.param("id");
+
+      // Parse DELETE query parameters
+      const rawQuery = c.req.query();
+      const deleteParams = parseDeleteParams(rawQuery, columns);
+
+      const result = await executeDeleteById(
+        {
+          db,
+          table: table as PgTable,
+          params: {
+            returning: deleteParams.returning,
+            hardDelete: deleteParams.hardDelete,
+          },
+          softDeleteColumn,
+        },
+        id,
+        PRIMARY_KEY_COLUMN
+      );
+
+      // Invalidate caches by bumping table version
+      if (options.env?.DATA_CACHE) {
+        await bumpTableVersion(options.env.DATA_CACHE, tableName);
+      }
+
+      // Handle not found case
+      if (result.length === 0) {
+        return c.json({ error: "Record not found" }, 404);
+      }
+
+      // Return 200 with deleted record if returning was specified
+      if (deleteParams.returning) {
+        return c.json(result[0], 200);
+      }
+
+      // Return 204 No Content if no returning specified
+      return c.body(null, 204);
+    }
+  );
+
+  // DELETE / (Bulk delete with filters)
+  const deleteParamsSchema = buildDeleteParamsSchema(columns);
+
+  app.openapi(
+    createRoute({
+      method: "delete",
+      path: "/",
+      tags: [tableName],
+      request: {
+        query: deleteParamsSchema,
+      },
+      responses: {
+        200: {
+          content: { "application/json": { schema: z.array(selectSchema) } },
+          description: "Deleted records (with returning)",
+        },
+        204: {
+          description:
+            "Records deleted successfully (no returning or no records matched)",
+        },
+      },
+    }),
+    async (c) => {
+      const client = postgres(connectionString);
+      const db = drizzle(client);
+
+      // Parse DELETE query parameters
+      const rawQuery = c.req.query();
+      const deleteParams = parseDeleteParams(rawQuery, columns);
+
+      // Always use executeDelete to ensure soft delete is handled correctly
+      const result = await executeDelete({
+        db,
+        table: table as PgTable,
+        params: deleteParams,
+        softDeleteColumn,
+      });
+
+      // Invalidate caches by bumping table version
+      if (options.env?.DATA_CACHE) {
+        await bumpTableVersion(options.env.DATA_CACHE, tableName);
+      }
+
+      // Return 200 with deleted records if returning was explicitly requested
+      if (result.length > 0 && deleteParams.returning) {
+        return c.json(result, 200);
+      }
+
+      // Return 204 No Content if no returning specified or no records deleted
+      return c.body(null, 204);
     }
   );
 

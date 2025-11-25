@@ -29,6 +29,25 @@ export const POSTS_TABLE_COLUMNS: ColumnConfig[] = [
 ];
 
 /**
+ * Table with soft delete column (deleted_at)
+ */
+export const SOFT_DELETE_TABLE_COLUMNS: ColumnConfig[] = [
+  { name: "id", type: "integer", nullable: false },
+  { name: "name", type: "text", nullable: false },
+  { name: "email", type: "character varying", nullable: false },
+  { name: "deleted_at", type: "timestamp without time zone", nullable: true },
+];
+
+/**
+ * Table with is_deleted boolean column
+ */
+export const IS_DELETED_TABLE_COLUMNS: ColumnConfig[] = [
+  { name: "id", type: "integer", nullable: false },
+  { name: "name", type: "text", nullable: false },
+  { name: "is_deleted", type: "boolean", nullable: false },
+];
+
+/**
  * Column config with unknown PostgreSQL type (for fallback testing)
  */
 export const TABLE_WITH_UNKNOWN_TYPE: ColumnConfig[] = [
