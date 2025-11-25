@@ -806,6 +806,248 @@ async function benchmarkPostQueryParams(): Promise<void> {
 }
 
 /**
+ * Helper: Create a test user for DELETE benchmarks
+ */
+async function createDeleteTestUser(
+  userData: Record<string, unknown>
+): Promise<{ id: unknown } | null> {
+  const { response } = await timedRequest(`${API_BASE_URL}/api/users/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(userData),
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  return (await response.json()) as { id: unknown };
+}
+
+/**
+ * Helper: Run DELETE by ID benchmark
+ */
+async function benchmarkDeleteById(
+  userId: unknown,
+  withReturning: boolean
+): Promise<void> {
+  const url = withReturning
+    ? `${API_BASE_URL}/api/users/${userId}?returning=id,name,email`
+    : `${API_BASE_URL}/api/users/${userId}`;
+
+  const { response, duration } = await timedRequest(url, { method: "DELETE" });
+
+  const passed = response.ok;
+  const label = withReturning ? "with returning" : "(default returning)";
+  console.log(
+    `${passed ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} DELETE /api/users/${userId}${withReturning ? "?returning=..." : ""} ${label} → ${formatDuration(duration, 500)}`
+  );
+
+  if (passed && withReturning) {
+    const deleted = (await response.json()) as Record<string, unknown>;
+    console.log(
+      `  ${colors.blue}→${colors.reset} Deleted user: ${deleted.name}`
+    );
+  }
+
+  recordBenchmark({
+    name: `DELETE: Single record by ID ${label}`,
+    passed,
+    duration,
+    expected: withReturning ? "status 200" : "status 200 or 204",
+    actual: `status ${response.status}`,
+    error: passed ? undefined : await response.clone().text(),
+  });
+}
+
+/**
+ * Helper: Run bulk DELETE benchmark
+ */
+async function benchmarkBulkDelete(timestamp: number): Promise<void> {
+  // Create test users for bulk delete
+  const bulkTestUsers = [
+    {
+      name: `Bulk Delete Test 1 ${timestamp}`,
+      email: `bulk-delete-1-${timestamp}@example.com`,
+      is_active: false,
+    },
+    {
+      name: `Bulk Delete Test 2 ${timestamp}`,
+      email: `bulk-delete-2-${timestamp}@example.com`,
+      is_active: false,
+    },
+  ];
+
+  for (const user of bulkTestUsers) {
+    await createDeleteTestUser(user);
+  }
+
+  const { response, duration } = await timedRequest(
+    `${API_BASE_URL}/api/users/?email__ilike=%bulk-delete%${timestamp}%&returning=id,email`,
+    { method: "DELETE" }
+  );
+
+  // With returning param, expect 200 with JSON body
+  const passed = response.status === 200;
+  console.log(
+    `${passed ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} DELETE /api/users/?email__ilike=%bulk-delete%${timestamp}%&returning=id,email → ${formatDuration(duration, 500)}`
+  );
+
+  if (passed) {
+    const deletedRecords = (await response.json()) as unknown[];
+    console.log(
+      `  ${colors.blue}→${colors.reset} Deleted ${deletedRecords.length} records`
+    );
+  }
+
+  recordBenchmark({
+    name: "DELETE: Bulk delete with filter and returning",
+    passed,
+    duration,
+    expected: "status 200",
+    actual: `status ${response.status}`,
+    error: passed ? undefined : await response.clone().text(),
+  });
+
+  // Also test bulk delete without returning (should get 204)
+  // Create another user for this test
+  await createDeleteTestUser({
+    name: `Bulk Delete NoReturn ${timestamp}`,
+    email: `bulk-delete-noreturn-${timestamp}@example.com`,
+    is_active: false,
+  });
+
+  const { response: noReturnRes, duration: noReturnDuration } =
+    await timedRequest(
+      `${API_BASE_URL}/api/users/?email__ilike=%bulk-delete-noreturn%${timestamp}%`,
+      { method: "DELETE" }
+    );
+
+  // Without returning param, expect 204 No Content
+  const noReturnPassed = noReturnRes.status === 204;
+  console.log(
+    `${noReturnPassed ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} DELETE /api/users/?email__ilike=... (no returning) → ${formatDuration(noReturnDuration, 500)}`
+  );
+  console.log(
+    `  ${colors.blue}→${colors.reset} Returned 204 No Content (no returning param)`
+  );
+
+  recordBenchmark({
+    name: "DELETE: Bulk delete without returning (204)",
+    passed: noReturnPassed,
+    duration: noReturnDuration,
+    expected: "status 204",
+    actual: `status ${noReturnRes.status}`,
+  });
+}
+
+/**
+ * Helper: Run DELETE edge case benchmarks (no match, not found)
+ */
+async function benchmarkDeleteEdgeCases(): Promise<void> {
+  // DELETE with no matching records (should return 204)
+  const { response: deleteNoneRes, duration: deleteNoneDuration } =
+    await timedRequest(`${API_BASE_URL}/api/users/?id=-999999`, {
+      method: "DELETE",
+    });
+
+  const deleteNoneOk = deleteNoneRes.status === 204;
+  console.log(
+    `${deleteNoneOk ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} DELETE /api/users/?id=-999999 (no match) → ${formatDuration(deleteNoneDuration, 500)}`
+  );
+  console.log(
+    `  ${colors.blue}→${colors.reset} Returned 204 No Content (no records matched)`
+  );
+
+  recordBenchmark({
+    name: "DELETE: No matching records (204)",
+    passed: deleteNoneOk,
+    duration: deleteNoneDuration,
+    expected: "status 204",
+    actual: `status ${deleteNoneRes.status}`,
+  });
+
+  // DELETE by non-existent ID (should return 404)
+  const { response: deleteNotFoundRes, duration: deleteNotFoundDuration } =
+    await timedRequest(`${API_BASE_URL}/api/users/-999999`, {
+      method: "DELETE",
+    });
+
+  const deleteNotFoundOk = deleteNotFoundRes.status === 404;
+  console.log(
+    `${deleteNotFoundOk ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} DELETE /api/users/-999999 (not found) → ${formatDuration(deleteNotFoundDuration, 500)}`
+  );
+  console.log(`  ${colors.blue}→${colors.reset} Returned 404 Not Found`);
+
+  recordBenchmark({
+    name: "DELETE: Record not found (404)",
+    passed: deleteNotFoundOk,
+    duration: deleteNotFoundDuration,
+    expected: "status 404",
+    actual: `status ${deleteNotFoundRes.status}`,
+  });
+}
+
+/**
+ * Benchmark: DELETE operations
+ *
+ * Tests DELETE endpoint functionality including:
+ * - Delete by ID with returning
+ * - Bulk delete with filters
+ * - Delete with no matching records (204)
+ */
+async function benchmarkDeleteOperations(): Promise<void> {
+  printSection("DELETE OPERATIONS");
+
+  const timestamp = Date.now();
+
+  // Create test users
+  const user1 = await createDeleteTestUser({
+    name: `Delete Test Single ${timestamp}`,
+    email: `delete-single-${timestamp}@example.com`,
+    is_active: true,
+  });
+
+  if (!user1) {
+    console.log(
+      `${colors.red}✗${colors.reset} Could not create test user for DELETE benchmark`
+    );
+    recordBenchmark({
+      name: "DELETE: Setup failed",
+      passed: false,
+      duration: 0,
+      error: "Could not create test user 1",
+    });
+    return;
+  }
+
+  const user2 = await createDeleteTestUser({
+    name: `Delete Test Bulk ${timestamp}`,
+    email: `delete-bulk-${timestamp}@example.com`,
+    is_active: false,
+  });
+
+  if (!user2) {
+    console.log(
+      `${colors.red}✗${colors.reset} Could not create second test user for DELETE benchmark`
+    );
+    recordBenchmark({
+      name: "DELETE: Setup failed",
+      passed: false,
+      duration: 0,
+      error: "Could not create test user 2",
+    });
+    return;
+  }
+
+  // Run benchmarks
+  await benchmarkDeleteById(user1.id, true);
+  await benchmarkDeleteById(user2.id, false);
+  await benchmarkBulkDelete(timestamp);
+  await benchmarkDeleteEdgeCases();
+}
+
+/**
  * Benchmark: Concurrent load
  */
 async function benchmarkConcurrentLoad(): Promise<void> {
@@ -907,6 +1149,7 @@ async function main(): Promise<void> {
     await benchmarkCrudOperations();
     await benchmarkGetQueryParams();
     await benchmarkPostQueryParams();
+    await benchmarkDeleteOperations();
     await benchmarkConcurrentLoad();
   } catch (error) {
     console.error(
