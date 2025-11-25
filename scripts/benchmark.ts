@@ -8,10 +8,15 @@
  * GET query parameters (filtering, sorting, pagination, field selection),
  * and POST query parameters (returning, on_conflict upsert).
  *
+ * Tiered Caching Architecture:
+ * - Data Plane: Cloudflare Cache API for query results (60s TTL, edge-cached)
+ * - Control Plane: KV for schema versions (invalidation triggers)
+ * - Code Plane: Memory (HOT_CACHE) for compiled routers (worker lifetime)
+ *
  * Performance Targets:
  * These targets are calibrated for transatlantic latency (UK → US-East-1):
  * - Cold starts: <1000ms (includes Worker init + DB introspection + query)
- * - Cache hits: <250ms (includes cache lookup + database query to Neon US-East-1)
+ * - Cache hits: <100ms (Cache API edge lookup, no DB query)
  * - OpenAPI cache: <100ms (in-memory cache, no DB query)
  * - Concurrent load: <600ms average (accounts for connection pooling overhead)
  *
@@ -19,7 +24,7 @@
  * - Database: Neon Postgres in us-east-1 (free tier)
  * - Network RTT UK→US-East: ~80-120ms baseline
  * - Smart Placement: Worker runs near database to minimize DB latency
- * - Primary bottleneck: Database query execution time (~150-200ms from UK)
+ * - Cache API: Edge-cached responses for fast cache hits (~1-10ms)
  *
  * Neon Free Tier Behavior:
  * - Autosuspend: Database suspends after 5 minutes of inactivity (cannot be configured)
@@ -231,10 +236,13 @@ async function benchmarkColdStart(): Promise<void> {
 }
 
 /**
- * Benchmark: Cache hit performance
+ * Benchmark: Cache hit performance (Cache API - edge cached)
+ *
+ * With Cache API, cache hits should be significantly faster than KV
+ * since data is served from the nearest edge location.
  */
 async function benchmarkCacheHits(): Promise<void> {
-  printSection("CACHE HIT PERFORMANCE");
+  printSection("CACHE HIT PERFORMANCE (Cache API)");
 
   // First, warm up the cache
   await fetch(`${API_BASE_URL}/api/users/`);
@@ -258,17 +266,17 @@ async function benchmarkCacheHits(): Promise<void> {
   const avgUsersDuration = Math.round(
     usersDurations.reduce((a, b) => a + b, 0) / usersDurations.length
   );
-  const usersOk = avgUsersDuration < 250;
+  const usersOk = avgUsersDuration < 100;
 
   console.log(
-    `${usersOk ? `${colors.green}✓` : `${colors.yellow}⚠`}${colors.reset} GET /api/users/ (avg of 3) → ${formatDuration(avgUsersDuration, 250)} ${usersOk ? "✓" : "(slower than target)"}`
+    `${usersOk ? `${colors.green}✓` : `${colors.yellow}⚠`}${colors.reset} GET /api/users/ (avg of 3) → ${formatDuration(avgUsersDuration, 100)} ${usersOk ? "✓" : "(slower than target)"}`
   );
 
   recordBenchmark({
     name: "Cache hit: GET /api/users/ average",
     passed: usersOk,
     duration: avgUsersDuration,
-    expected: "< 250ms",
+    expected: "< 100ms",
     actual: `${avgUsersDuration}ms`,
   });
 
@@ -286,17 +294,17 @@ async function benchmarkCacheHits(): Promise<void> {
   const avgProductsDuration = Math.round(
     productsDurations.reduce((a, b) => a + b, 0) / productsDurations.length
   );
-  const productsOk = avgProductsDuration < 250;
+  const productsOk = avgProductsDuration < 100;
 
   console.log(
-    `${productsOk ? `${colors.green}✓` : `${colors.yellow}⚠`}${colors.reset} GET /api/products/ (avg of 3) → ${formatDuration(avgProductsDuration, 250)} ${productsOk ? "✓" : "(slower than target)"}`
+    `${productsOk ? `${colors.green}✓` : `${colors.yellow}⚠`}${colors.reset} GET /api/products/ (avg of 3) → ${formatDuration(avgProductsDuration, 100)} ${productsOk ? "✓" : "(slower than target)"}`
   );
 
   recordBenchmark({
     name: "Cache hit: GET /api/products/ average",
     passed: productsOk,
     duration: avgProductsDuration,
-    expected: "< 250ms",
+    expected: "< 100ms",
     actual: `${avgProductsDuration}ms`,
   });
 
@@ -351,10 +359,13 @@ async function measureQueryCacheBehavior(
 }
 
 /**
- * Benchmark: Query parameter cache behavior
+ * Benchmark: Query parameter cache behavior (Cache API)
+ *
+ * Tests that different query parameter combinations are cached separately
+ * in the Cache API with deterministic URL-based keys.
  */
 async function benchmarkQueryParamCaching(): Promise<void> {
-  printSection("QUERY PARAMETER CACHING");
+  printSection("QUERY PARAMETER CACHING (Cache API)");
 
   // Test filter caching
   const filterResult = await measureQueryCacheBehavior(
@@ -468,10 +479,13 @@ async function benchmarkQueryParamCaching(): Promise<void> {
 }
 
 /**
- * Benchmark: Cache speedup analysis
+ * Benchmark: Cache speedup analysis (Cache API vs Cold)
+ *
+ * Measures the performance improvement from Cache API edge caching.
+ * With Cache API, expect 5-20x speedup compared to database queries.
  */
 async function benchmarkCacheSpeedup(): Promise<void> {
-  printSection("CACHE SPEEDUP ANALYSIS");
+  printSection("CACHE SPEEDUP ANALYSIS (Cache API)");
 
   // Cold start
   const { duration: coldDuration } = await timedRequest(
@@ -490,19 +504,19 @@ async function benchmarkCacheSpeedup(): Promise<void> {
   );
 
   const speedup = coldDuration / warmDuration;
-  const speedupOk = speedup >= 1.2;
+  const speedupOk = speedup >= 2.0;
 
-  console.log(`Cold start: ${Math.round(coldDuration)}ms`);
-  console.log(`Cache hit: ${Math.round(warmDuration)}ms`);
+  console.log(`Cold start (DB query): ${Math.round(coldDuration)}ms`);
+  console.log(`Cache hit (Cache API): ${Math.round(warmDuration)}ms`);
   console.log(
-    `${speedupOk ? `${colors.green}✓` : `${colors.yellow}⚠`}${colors.reset} Speedup: ${colors.bright}${speedup.toFixed(1)}x${colors.reset} ${speedupOk ? "✓" : "(below 1.2x target)"}`
+    `${speedupOk ? `${colors.green}✓` : `${colors.yellow}⚠`}${colors.reset} Speedup: ${colors.bright}${speedup.toFixed(1)}x${colors.reset} ${speedupOk ? "✓" : "(below 2.0x target)"}`
   );
 
   recordBenchmark({
-    name: "Cache speedup ratio",
+    name: "Cache speedup ratio (Cache API)",
     passed: speedupOk,
     duration: warmDuration,
-    expected: ">= 1.2x",
+    expected: ">= 2.0x",
     actual: `${speedup.toFixed(1)}x`,
   });
 }
