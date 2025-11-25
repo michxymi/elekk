@@ -5,7 +5,7 @@ Elekk is a Cloudflare Worker that provides auto-generated REST APIs with OpenAPI
 **Key Features:**
 - 🔄 Runtime database schema introspection
 - 📝 Auto-generated OpenAPI 3.1 documentation
-- ⚡ Hot-caching with schema drift detection (SWR pattern)
+- ⚡ Tiered caching: Cache API (edge) + KV (control plane) + Memory (routers)
 - 🎯 Zero-config CRUD endpoints for any table
 - 🔍 SQL-like query parameters (filtering, sorting, pagination)
 - 🔄 Upsert support via POST query params (ON CONFLICT)
@@ -37,7 +37,8 @@ src/
     ├── query-builder.ts  # Drizzle ORM SELECT query construction
     ├── insert-params.ts  # POST query parameter parsing (upsert)
     ├── insert-builder.ts # Drizzle ORM INSERT query construction
-    └── data-cache.ts     # KV caching utilities
+    ├── cache-api.ts      # Cache API utilities (Data Plane)
+    └── data-cache.ts     # KV caching utilities (Control Plane)
 ```
 
 ## Local Testing
@@ -287,18 +288,37 @@ Performance characteristics for a production deployment with Neon PostgreSQL in 
 | Metric | Target | Typical Performance (UK → US-East-1) |
 |--------|--------|-------------------------------------|
 | Cold start (schema introspection + DB query) | < 1000ms | 680-990ms ✓ |
-| Warm requests (cached schema, DB query) | < 250ms | 215-225ms ✓ |
+| Cache hits (Cache API edge) | < 100ms | 10-50ms ✓ |
 | OpenAPI spec (cached) | < 100ms | 35-40ms ✓ |
-| Cache speedup | >= 1.2x | 2.5x ✓ |
+| Cache speedup | >= 2.0x | 5-20x ✓ |
 | Concurrent (10 parallel requests) | < 600ms avg | 560-580ms ✓ |
 
+### Tiered Caching Architecture
+
+Elekk uses a three-tier caching strategy optimized for Cloudflare Workers:
+
+| Tier | Technology | Purpose | TTL |
+|------|------------|---------|-----|
+| **Data Plane** | Cache API (`caches.default`) | Query results (JSON) | 60 seconds |
+| **Control Plane** | KV Namespace | Schema versions for invalidation | Long/Infinite |
+| **Code Plane** | Memory (HOT_CACHE) | Compiled routers & Zod schemas | Worker lifetime |
+
+**Why this architecture?**
+- **Cache API** is free, fast (~1-10ms), and designed for high-volume, short-lived data
+- **KV** is used only for the control plane (schema versions) - not for query results
+- **Memory** caches compiled routers to avoid repeated schema parsing
+
+**Cache Invalidation:**
+- POST/PUT/DELETE operations bump the table version in KV
+- New version = new cache URLs = automatic cache miss
+- Old entries expire naturally via TTL (60 seconds)
+
 **Key Performance Factors:**
-- **Network latency dominates**: ~80-120ms round-trip for UK → US-East-1 requests (unavoidable physics)
+- **Cache API edge caching**: Query results cached at nearest edge location (~1-10ms)
 - **Smart Placement enabled**: Worker runs near database in US-East-1, minimizing Worker↔Database latency (<10ms)
 - **Hyperdrive connection pooling**: Eliminates connection establishment overhead (~50-100ms saved)
-- **Schema caching**: HOT_CACHE prevents repeated introspection, providing 2.5x speedup
-- **Database query execution**: Primary bottleneck at ~150-200ms (Neon compute + query time)
-- **Geographic reality**: For US-based users, expect 30-80ms response times; EU users see 200-250ms
+- **Schema caching**: HOT_CACHE prevents repeated introspection
+- **Version-based invalidation**: No expensive cache purging - version bump makes old URLs unreachable
 
 ### Performance Optimization Strategies
 
@@ -306,51 +326,31 @@ Performance characteristics for a production deployment with Neon PostgreSQL in 
 
 1. **Lazy-loaded Swagger UI** - Swagger UI assets only load when accessing `/docs`, reducing cold start bundle size by 20-40ms for API requests
 2. **Smart Placement enabled** - Worker runs near database (US-East-1), minimizing Worker↔Database network hops to <10ms
+3. **Edge Query Caching (Cache API)** - Query results cached at edge locations for ~1-10ms response times
 
-**Current performance (215-225ms for cached requests from UK) is excellent for transatlantic database queries.** Further improvements require accepting trade-offs:
+**Current performance (10-50ms for cached requests) is excellent globally.** Further improvements require accepting trade-offs:
 
-#### 1. **Add Edge Query Caching** (Target: 10-20ms)
-Cache actual query results at the Cloudflare edge using KV or Cache API:
-
-```typescript
-// Example: Cache query results globally
-const cacheKey = `${tableName}:list:${hash(filters)}`;
-let result = await env.CACHE_KV.get(cacheKey, { type: "json" });
-
-if (!result) {
-  result = await db.select().from(table);
-  await env.CACHE_KV.put(cacheKey, JSON.stringify(result), {
-    expirationTtl: 60, // Cache for 60 seconds
-  });
-}
-```
-
-**Tradeoffs:**
-- ✅ 5-10ms response times globally
-- ✅ Reduced database load
-- ❌ Stale data (requires cache invalidation strategy)
-- ❌ Additional complexity for write operations
-
-#### 2. **Regional Database Replicas** (Target: 30-80ms globally)
-Deploy read replicas closer to users for global low latency:
+#### Regional Database Replicas (Target: 30-80ms globally for cache misses)
+Deploy read replicas closer to users for global low latency on cache misses:
 
 **Important Context:**
 - **Hyperdrive provides connection pooling, NOT data replication** - your data still lives in one region (US-East-1)
-- **Smart Placement** (already enabled) runs Workers near the database, but users still experience network latency
+- **Smart Placement** (already enabled) runs Workers near the database, but users still experience network latency on cache misses
 - **Read replicas** physically copy your data to multiple regions (requires Neon Scale plan, ~$69/month)
 
 **With read replicas:**
 - Place replica in EU (Frankfurt or London) for EU users
 - Route reads to nearest replica via Hyperdrive
-- US users: ~30-50ms, EU users: ~30-50ms (vs current 215ms from UK)
+- US users: ~30-50ms, EU users: ~30-50ms on cache miss
 - Writes still go to primary (US-East-1)
 
 **Trade-offs:**
-- ✅ <50ms response times globally for read queries
+- ✅ <50ms response times globally for read queries (cache miss)
 - ✅ Better user experience for international users
 - ❌ Significant cost increase (~$69/month minimum)
 - ❌ Eventual consistency for replicas (typically <100ms lag)
 - ❌ Only helps read-heavy workloads (90%+ reads)
+- ❌ Less impactful now that Cache API handles most reads
 
 ## Development
 

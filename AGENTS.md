@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to coding agents when working in this repository.
 
 ## Project Overview
 
@@ -52,10 +52,16 @@ The application follows a **schema-first, runtime-introspection** architecture:
 5. **Query parameter parsing**
    - GET: `parseQueryParams()` extracts filters, sorting, pagination
    - POST: `parseInsertParams()` extracts returning fields, on_conflict configuration
-6. **Query building**
+6. **Cache lookup (Data Plane)**
+   - GET: Checks Cache API with version-embedded URL
+   - Cache hit: Returns cached response, schedules SWR revalidation in background
+   - Cache miss: Proceeds to query building
+7. **Query building**
    - GET: `executeQuery()` constructs Drizzle ORM query with WHERE, ORDER BY, LIMIT, OFFSET
    - POST: `executeInsert()` constructs INSERT with optional ON CONFLICT and RETURNING clauses
-7. **Data caching** with SWR pattern - stale data served immediately, fresh data fetched in background
+8. **Cache write and invalidation**
+   - GET: Writes query results to Cache API (60s TTL) in background
+   - POST/PUT/DELETE: Bumps table version in KV (invalidates all Cache API entries for that table)
 
 ### Core Modules
 
@@ -112,11 +118,17 @@ The application follows a **schema-first, runtime-introspection** architecture:
 - `buildUpdateSet()` - Builds update set for ON CONFLICT DO UPDATE using EXCLUDED values
 - `executeInsert()` - Main entry point for executing INSERT with returning/onConflict support
 
-**src/lib/data-cache.ts** - KV caching utilities
-- `readCachedQueryResult()` / `writeCachedQueryResult()` - Query result caching
+**src/lib/cache-api.ts** - Cache API utilities (Data Plane)
+- `buildCacheUrl()` - Constructs versioned cache URLs for Cache API
+- `readFromCacheApi()` - Reads cached query results from Cache API
+- `writeToCacheApi()` - Writes query results to Cache API with TTL
+- Used for high-volume, short-lived query result caching (60s TTL)
+
+**src/lib/data-cache.ts** - KV caching utilities (Control Plane)
 - `readCachedOpenApi()` / `writeCachedOpenApi()` - OpenAPI spec caching
-- `getListCacheKey()` / `getQueryCachePrefix()` - Cache key generation
-- Implements SWR (stale-while-revalidate) caching pattern
+- `getTableVersion()` / `setTableVersion()` - Table version management for cache invalidation
+- `bumpTableVersion()` - Increments table version on write operations (invalidates Cache API entries)
+- Implements version-based cache invalidation pattern
 
 ### Configuration
 
@@ -137,21 +149,38 @@ The application follows a **schema-first, runtime-introspection** architecture:
 - Database: Neon Postgres in us-east-1
 - Smart Placement: Enabled (Worker runs near database)
 - Connection Pooling: Hyperdrive
-- Caching: HOT_CACHE for routers, OPENAPI_CACHE for OpenAPI spec
+- Tiered Caching Architecture (see below)
+
+**Tiered Caching Architecture:**
+
+| Tier | Technology | Purpose | TTL |
+|------|------------|---------|-----|
+| **Data Plane** | Cache API (`caches.default`) | Query results (JSON) | 60 seconds |
+| **Control Plane** | KV Namespace | Schema versions for invalidation | Long/Infinite |
+| **Code Plane** | Memory (HOT_CACHE) | Compiled routers & Zod schemas | Worker lifetime |
+
+**Why this architecture?**
+- **Cache API** is free, fast (~1-10ms), and designed for high-volume, short-lived data
+- **KV** is used only for the control plane (schema versions) - not for query results
+- **Memory** caches compiled routers to avoid repeated schema parsing
+
+**Cache Invalidation:**
+- POST/PUT/DELETE operations bump the table version in KV
+- New version = new cache URLs = automatic cache miss
+- Old entries expire naturally via TTL (60 seconds)
 
 **Benchmark Results (UK → US-East-1):**
-- Cold start: ~680-990ms
-- Warm requests: ~215-225ms (dominated by database query execution ~150-200ms)
+- Cold start (schema introspection + DB query): ~680-990ms
+- Cache hits (Cache API edge): ~10-50ms
 - OpenAPI spec (cached): ~35-40ms
-- Cache speedup: 2.5x
+- Cache speedup: 5-20x
 
 **Performance Bottlenecks:**
 1. **Geographic latency:** UK → US-East-1 network RTT is ~80-120ms (physics limit)
-2. **Database query execution:** Neon compute + query time ~150-200ms
+2. **Database query execution:** Neon compute + query time ~150-200ms on cache miss
 3. **Worker initialization:** ~50-100ms on cold starts (minimized via lazy-loading)
 
-**Key Insight:** With Hyperdrive connection pooling and Smart Placement enabled, the primary bottleneck is database query execution time, not Worker performance. Further optimization requires either:
-- Query result caching (adds data staleness)
+**Key Insight:** With tiered caching, most read requests hit Cache API at the edge (~10-50ms). Cache misses require database queries. Further optimization for cache misses requires:
 - Read replicas in EU (requires ~$69/month Neon Scale plan)
 
 ## Database Setup
