@@ -5,10 +5,14 @@ import { createInsertSchema, createSelectSchema } from "drizzle-zod";
 import postgres from "postgres";
 import { PRIMARY_KEY_COLUMN } from "@/constants";
 import {
-  deleteCachedKey,
-  getListCacheKey,
-  readCachedQueryResult,
-  writeCachedQueryResult,
+  buildCacheUrl,
+  readFromCacheApi,
+  writeToCacheApi,
+} from "@/lib/cache-api";
+import {
+  bumpTableVersion,
+  getTableVersion,
+  setTableVersion,
 } from "@/lib/data-cache";
 import { executeInsert } from "@/lib/insert-builder";
 import { hasInsertParams, parseInsertParams } from "@/lib/insert-params";
@@ -30,22 +34,21 @@ type CrudRouterOptions = {
 
 type RuntimeTable = unknown;
 
-type CritRevalidationOptions = {
-  kv: KVNamespace;
+type CacheRevalidationOptions = {
   table: RuntimeTable;
+  tableName: string;
   connectionString: string;
-  cacheKey: string;
-  schemaVersion: string;
+  cacheUrl: string;
   query?: ParsedQuery;
-  columns?: ColumnConfig[];
 };
 
 /**
- * Revalidates the list cache by fetching fresh data from the database
+ * Revalidates the cache by fetching fresh data from the database
+ * and writing to Cache API (Stale-While-Revalidate pattern)
  *
- * @param options - Revalidation options including KV store, table, and query params
+ * @param options - Revalidation options including table and cache URL
  */
-const revalidateListCache = async (options: CritRevalidationOptions) => {
+const revalidateCache = async (options: CacheRevalidationOptions) => {
   const client = postgres(options.connectionString);
   const db = drizzle(client);
   try {
@@ -61,25 +64,19 @@ const revalidateListCache = async (options: CritRevalidationOptions) => {
       results = await db.select().from(options.table as never);
     }
 
-    await writeCachedQueryResult(options.kv, options.cacheKey, {
-      data: results,
-      cachedAt: Date.now(),
-      version: options.schemaVersion,
-      query: options.query,
-    });
+    // Write to Cache API with 60s TTL
+    await writeToCacheApi(options.cacheUrl, results, 60);
   } catch (error) {
-    console.error("List cache revalidation failed", error);
+    console.error("Cache revalidation failed", error);
   }
 };
 
-type ListRevalidationParams = {
-  env?: AppEnv;
+type CacheRevalidationParams = {
   connectionString: string;
   table: RuntimeTable;
-  cacheKey: string;
-  schemaVersion?: string;
+  tableName: string;
+  cacheUrl: string;
   query?: ParsedQuery;
-  columns?: ColumnConfig[];
 };
 
 type ExecutionContextHolder = {
@@ -88,33 +85,26 @@ type ExecutionContextHolder = {
   };
 };
 
-const scheduleListCacheRevalidation = (
+const scheduleCacheRevalidation = (
   c: ExecutionContextHolder,
-  params: ListRevalidationParams
+  params: CacheRevalidationParams
 ) => {
-  if (!(params.env?.DATA_CACHE && params.schemaVersion)) {
-    return;
-  }
-
   try {
-    const waitUntil = c.executionCtx?.waitUntil;
-    if (!waitUntil) {
+    if (!c.executionCtx?.waitUntil) {
       return;
     }
 
-    waitUntil(
-      revalidateListCache({
-        kv: params.env.DATA_CACHE,
+    c.executionCtx.waitUntil(
+      revalidateCache({
         table: params.table,
+        tableName: params.tableName,
         connectionString: params.connectionString,
-        cacheKey: params.cacheKey,
-        schemaVersion: params.schemaVersion,
+        cacheUrl: params.cacheUrl,
         query: params.query,
-        columns: params.columns,
       })
     );
   } catch (error) {
-    console.error("Failed to schedule list cache revalidation", error);
+    console.error("Failed to schedule cache revalidation", error);
   }
 };
 
@@ -363,6 +353,80 @@ const buildInsertParamsSchema = (columns: ColumnConfig[]) => {
 };
 
 /**
+ * Generates a query key for cache URL from parsed query parameters
+ */
+const generateCacheQueryKey = (
+  tableName: string,
+  parsedQuery: ParsedQuery,
+  hasParams: boolean
+): string => {
+  if (!hasParams) {
+    return "list";
+  }
+  const prefix = `data:${tableName}:`;
+  const fullKey = generateQueryCacheKey(tableName, parsedQuery);
+  if (fullKey.startsWith(prefix)) {
+    return fullKey.substring(prefix.length);
+  }
+  return fullKey;
+};
+
+type TableVersionParams = {
+  cacheEnabled: boolean;
+  cacheKv: KVNamespace | undefined;
+  tableName: string;
+  schemaVersion: string | undefined;
+};
+
+/**
+ * Gets or initializes the table version from KV (Control Plane)
+ */
+const resolveTableVersion = async (
+  params: TableVersionParams
+): Promise<string | undefined> => {
+  const { cacheEnabled, cacheKv, tableName, schemaVersion } = params;
+  if (!(cacheEnabled && cacheKv)) {
+    return schemaVersion;
+  }
+
+  const storedVersion = await getTableVersion(cacheKv, tableName);
+  if (storedVersion) {
+    return storedVersion;
+  }
+
+  if (schemaVersion) {
+    await setTableVersion(cacheKv, tableName, schemaVersion);
+  }
+  return schemaVersion;
+};
+
+type FetchQueryResultsParams = {
+  connectionString: string;
+  table: RuntimeTable;
+  parsedQuery: ParsedQuery;
+  hasParams: boolean;
+};
+
+/**
+ * Executes a database query and returns results
+ */
+const fetchQueryResults = async (
+  params: FetchQueryResultsParams
+): Promise<unknown[]> => {
+  const client = postgres(params.connectionString);
+  const db = drizzle(client);
+
+  if (params.hasParams) {
+    return await executeQuery({
+      db,
+      table: params.table as PgTable,
+      query: params.parsedQuery,
+    });
+  }
+  return await db.select().from(params.table as never);
+};
+
+/**
  * Generates an OpenAPI-compliant CRUD router for a database table
  *
  * Creates GET (list with filtering/sorting/pagination) and POST (create) endpoints
@@ -418,59 +482,60 @@ export function createCrudRouter(
       },
     }),
     async (c) => {
-      const cacheControl = c.req.header("X-Cache-Control");
-      const shouldBypassCache = cacheControl === "no-cache";
+      const shouldBypassCache = c.req.header("X-Cache-Control") === "no-cache";
 
       // Parse query parameters
       const rawQuery = c.req.query();
       const parsedQuery = parseQueryParams(rawQuery, columns);
       const hasParams = hasQueryParams(parsedQuery);
 
-      // Generate appropriate cache key
-      const cacheKey = hasParams
-        ? generateQueryCacheKey(tableName, parsedQuery)
-        : getListCacheKey(tableName);
+      // Generate query key for cache URL
+      const queryKey = generateCacheQueryKey(tableName, parsedQuery, hasParams);
 
-      // Check cache
-      if (!shouldBypassCache && cacheEnabled && cacheKv && schemaVersion) {
-        const cached = await readCachedQueryResult(cacheKv, cacheKey);
-        if (cached?.version === schemaVersion) {
-          scheduleListCacheRevalidation(c, {
-            env: options.env,
+      // Get or initialize table version from KV (Control Plane)
+      const tableVersion = await resolveTableVersion({
+        cacheEnabled,
+        cacheKv,
+        tableName,
+        schemaVersion,
+      });
+
+      // Build Cache API URL with version embedded
+      const cacheUrl = tableVersion
+        ? buildCacheUrl(tableName, queryKey, tableVersion)
+        : null;
+
+      // Check Cache API (Data Plane)
+      if (!shouldBypassCache && cacheEnabled && cacheUrl) {
+        const cached = await readFromCacheApi<unknown[]>(cacheUrl);
+        if (cached) {
+          // Schedule SWR revalidation in background
+          scheduleCacheRevalidation(c, {
             connectionString,
             table,
-            cacheKey,
-            schemaVersion,
+            tableName,
+            cacheUrl,
             query: parsedQuery,
-            columns,
           });
-          return c.json(cached.data);
+          return c.json(cached);
         }
       }
 
-      // Execute query
-      const client = postgres(connectionString);
-      const db = drizzle(client);
+      // Execute query (cache miss)
+      const results = await fetchQueryResults({
+        connectionString,
+        table,
+        parsedQuery,
+        hasParams,
+      });
 
-      let results: unknown[];
-      if (hasParams) {
-        results = await executeQuery({
-          db,
-          table: table as PgTable,
-          query: parsedQuery,
-        });
-      } else {
-        results = await db.select().from(table as never);
-      }
-
-      // Cache results
-      if (cacheEnabled && cacheKv && schemaVersion) {
-        await writeCachedQueryResult(cacheKv, cacheKey, {
-          data: results,
-          cachedAt: Date.now(),
-          version: schemaVersion,
-          query: parsedQuery,
-        });
+      // Write to Cache API (in background to not block response)
+      if (cacheEnabled && cacheUrl) {
+        try {
+          c.executionCtx?.waitUntil(writeToCacheApi(cacheUrl, results, 60));
+        } catch {
+          // executionCtx may not be available in test environments
+        }
       }
 
       return c.json(results);
@@ -538,15 +603,10 @@ export function createCrudRouter(
         return c.json({ error: "Insert failed" }, 500);
       }
 
-      // Invalidate all caches for this table (list + query caches)
+      // Invalidate all caches by bumping table version (Control Plane)
+      // New version = new cache URLs = automatic invalidation
       if (options.env?.DATA_CACHE) {
-        await deleteCachedKey(
-          options.env.DATA_CACHE,
-          getListCacheKey(tableName)
-        );
-        // Note: Query-specific caches will naturally expire or be invalidated
-        // when the schema version changes. For immediate invalidation of all
-        // query caches, we would need to track cache keys per table.
+        await bumpTableVersion(options.env.DATA_CACHE, tableName);
       }
 
       // Return 200 for upsert updates, 201 for new inserts

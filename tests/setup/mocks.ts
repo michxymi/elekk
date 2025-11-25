@@ -185,3 +185,52 @@ export function createMockDataCache() {
 
   return cache as unknown as KVNamespace & { storage: Map<string, string> };
 }
+
+/**
+ * Mock Cloudflare Cache API instance
+ */
+export function createMockCacheApi() {
+  const storage = new Map<string, Response>();
+
+  return {
+    storage,
+    match: vi.fn((url: string | Request) => {
+      const key = typeof url === "string" ? url : url.url;
+      const cached = storage.get(key);
+      return Promise.resolve(cached?.clone() ?? null);
+    }),
+    put: vi.fn((url: string | Request, response: Response) => {
+      const key = typeof url === "string" ? url : url.url;
+      storage.set(key, response.clone());
+      return Promise.resolve();
+    }),
+    delete: vi.fn((url: string | Request) => {
+      const key = typeof url === "string" ? url : url.url;
+      return Promise.resolve(storage.delete(key));
+    }),
+  } as unknown as Cache & { storage: Map<string, Response> };
+}
+
+/**
+ * Mock global caches object for Cache API
+ */
+export function mockGlobalCaches() {
+  const cacheInstances = new Map<string, Cache>();
+
+  const mockCaches = {
+    open: vi.fn((name: string) => {
+      if (!cacheInstances.has(name)) {
+        cacheInstances.set(name, createMockCacheApi());
+      }
+      const cache = cacheInstances.get(name);
+      return Promise.resolve(cache as Cache);
+    }),
+    default: createMockCacheApi(),
+    _instances: cacheInstances,
+  };
+
+  // @ts-expect-error - mocking global caches
+  global.caches = mockCaches as unknown as typeof caches;
+
+  return mockCaches;
+}

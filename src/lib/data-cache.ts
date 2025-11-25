@@ -2,6 +2,7 @@ import type { ParsedQuery } from "./query-params";
 
 const DATA_CACHE_PREFIX = "data:";
 const OPENAPI_CACHE_KEY = `${DATA_CACHE_PREFIX}openapi`;
+const VERSION_PREFIX = "version:";
 
 /**
  * Cached query result stored in KV
@@ -174,3 +175,67 @@ export const writeCachedOpenApi = async (
     console.error("Failed to persist OpenAPI cache", error);
   }
 };
+
+// =============================================================================
+// Control Plane: Table Version Management (for Cache API invalidation)
+// =============================================================================
+
+/**
+ * Get current version for a table from KV (Control Plane)
+ *
+ * The version is used to construct Cache API URLs, enabling automatic
+ * invalidation when the version changes.
+ *
+ * @param kv - The KV namespace to read from
+ * @param tableName - The database table name
+ * @returns The current version string or null if not set
+ */
+export async function getTableVersion(
+  kv: KVNamespace | undefined,
+  tableName: string
+): Promise<string | null> {
+  if (!kv) {
+    return null;
+  }
+
+  return await kv.get(`${VERSION_PREFIX}${tableName}`);
+}
+
+/**
+ * Set version for a table in KV (Control Plane)
+ *
+ * @param kv - The KV namespace to write to
+ * @param tableName - The database table name
+ * @param version - The version string to set
+ */
+export async function setTableVersion(
+  kv: KVNamespace | undefined,
+  tableName: string,
+  version: string
+): Promise<void> {
+  if (!kv) {
+    return;
+  }
+
+  await kv.put(`${VERSION_PREFIX}${tableName}`, version);
+}
+
+/**
+ * Bump version for a table (invalidates all Cache API entries)
+ *
+ * Uses timestamp as the new version, ensuring uniqueness.
+ * When the version changes, all existing cache URLs become unreachable,
+ * effectively invalidating the cache without explicit deletion.
+ *
+ * @param kv - The KV namespace to write to
+ * @param tableName - The database table name
+ * @returns The new version string
+ */
+export async function bumpTableVersion(
+  kv: KVNamespace | undefined,
+  tableName: string
+): Promise<string> {
+  const newVersion = Date.now().toString();
+  await setTableVersion(kv, tableName, newVersion);
+  return newVersion;
+}
