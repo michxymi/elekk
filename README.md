@@ -9,6 +9,7 @@ Elekk is a Cloudflare Worker that provides auto-generated REST APIs with OpenAPI
 - 🎯 Zero-config CRUD endpoints for any table
 - 🔍 SQL-like query parameters (filtering, sorting, pagination)
 - 🔄 Upsert support via POST query params (ON CONFLICT)
+- 🗑️ Soft delete support (auto-detects `deleted_at`/`is_deleted` columns)
 - 🔌 PostgreSQL via Cloudflare Hyperdrive
 
 **Tech Stack:** Cloudflare Workers, Hono, @hono/zod-openapi, Drizzle ORM, Zod
@@ -37,6 +38,8 @@ src/
     ├── query-builder.ts  # Drizzle ORM SELECT query construction
     ├── insert-params.ts  # POST query parameter parsing (upsert)
     ├── insert-builder.ts # Drizzle ORM INSERT query construction
+    ├── delete-params.ts  # DELETE query parameter parsing (soft delete)
+    ├── delete-builder.ts # Drizzle ORM DELETE/UPDATE query construction
     ├── cache-api.ts      # Cache API utilities (Data Plane)
     └── data-cache.ts     # KV caching utilities (Control Plane)
 ```
@@ -249,7 +252,71 @@ curl -X POST "http://localhost:8787/api/users/?returning=id,email&on_conflict=em
 ALTER TABLE users ADD CONSTRAINT users_email_unique UNIQUE (email);
 ```
 
-### Step 8: Test Schema Drift Detection
+### Step 8: DELETE Query Parameters
+
+Elekk supports SQL-like query parameters for DELETE requests, including soft delete support:
+
+**Delete by ID:**
+```bash
+# Delete a single user by ID
+curl -X DELETE "http://localhost:8787/api/users/1"
+
+# Delete with RETURNING (returns deleted record)
+curl -X DELETE "http://localhost:8787/api/users/1?returning=id,name,email"
+```
+
+**Bulk Delete with Filters:**
+```bash
+# Delete inactive users
+curl -X DELETE "http://localhost:8787/api/users/?is_active=false"
+
+# Delete with multiple filters
+curl -X DELETE "http://localhost:8787/api/users/?is_active=false&name__like=%Test%"
+
+# Delete with RETURNING (returns all deleted records)
+curl -X DELETE "http://localhost:8787/api/users/?is_active=false&returning=id,email"
+```
+
+**Soft Delete (Auto-Detected):**
+
+If your table has a `deleted_at` or `is_deleted` column, Elekk automatically uses soft delete (UPDATE instead of DELETE):
+
+```bash
+# Creates/has soft_delete_users table with deleted_at column
+docker exec -i elekk-postgres psql -U postgres -d elekk_test <<EOF
+CREATE TABLE soft_delete_users (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL,
+  deleted_at TIMESTAMP WITHOUT TIME ZONE
+);
+INSERT INTO soft_delete_users (name, email) VALUES
+  ('Test User', 'test@example.com');
+EOF
+
+# This performs UPDATE soft_delete_users SET deleted_at = NOW() WHERE id = 1
+curl -X DELETE "http://localhost:8787/api/soft_delete_users/1"
+```
+
+**Force Hard Delete:**
+```bash
+# Override soft delete behavior with hard_delete=true
+curl -X DELETE "http://localhost:8787/api/soft_delete_users/1?hard_delete=true"
+```
+
+| Query Param | SQL Equivalent | Description |
+|-------------|----------------|-------------|
+| `returning=id,name` | `RETURNING id, name` | Select which fields to return after DELETE |
+| `hard_delete=true` | `DELETE FROM` | Force hard delete even if table has soft delete column |
+| `<field>=<value>` | `WHERE field = value` | Filter which records to delete |
+| `<field>__<op>=<value>` | `WHERE field <op> value` | All GET filter operators work (eq, gt, gte, lt, lte, like, ilike, in, isnull) |
+
+**Response Codes:**
+- `200 OK` - Record(s) deleted, body contains deleted records (with RETURNING)
+- `204 No Content` - Record(s) deleted but no RETURNING specified, or no records matched filters
+- `404 Not Found` - DELETE by ID where record doesn't exist
+
+### Step 9: Test Schema Drift Detection
 
 Modify the database schema and watch Elekk automatically detect changes:
 
@@ -373,7 +440,9 @@ Deploy read replicas closer to users for global low latency on cache misses:
 5. **Query parsing**
    - GET: extracts filters, sorting, pagination from query parameters
    - POST: extracts returning fields, on_conflict configuration for upserts
+   - DELETE: extracts filters, returning fields, and detects soft delete columns
 6. **Query execution**
    - GET: builds Drizzle ORM query with WHERE, ORDER BY, LIMIT, OFFSET
    - POST: builds INSERT with optional ON CONFLICT and RETURNING clauses
+   - DELETE: builds DELETE or UPDATE (soft delete) with WHERE and RETURNING
 7. **Caching** with SWR (stale-while-revalidate) pattern for fast responses
