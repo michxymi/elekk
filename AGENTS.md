@@ -52,6 +52,7 @@ The application follows a **schema-first, runtime-introspection** architecture:
 5. **Query parameter parsing**
    - GET: `parseQueryParams()` extracts filters, sorting, pagination
    - POST: `parseInsertParams()` extracts returning fields, on_conflict configuration
+   - PUT/PATCH: `parseUpdateParams()` extracts filters, returning fields
    - DELETE: `parseDeleteParams()` extracts filters, returning fields, and hard_delete flag
 6. **Cache lookup (Data Plane)**
    - GET: Checks Cache API with version-embedded URL
@@ -60,10 +61,11 @@ The application follows a **schema-first, runtime-introspection** architecture:
 7. **Query building**
    - GET: `executeQuery()` constructs Drizzle ORM query with WHERE, ORDER BY, LIMIT, OFFSET
    - POST: `executeInsert()` constructs INSERT with optional ON CONFLICT and RETURNING clauses
+   - PUT/PATCH: `executeUpdate()` / `executeUpdateById()` constructs UPDATE with WHERE and RETURNING
    - DELETE: `executeDelete()` constructs DELETE or UPDATE (soft delete) with WHERE and RETURNING
 8. **Cache write and invalidation**
    - GET: Writes query results to Cache API (60s TTL) in background
-   - POST/PUT/DELETE: Bumps table version in KV (invalidates all Cache API entries for that table)
+   - POST/PUT/PATCH/DELETE: Bumps table version in KV (invalidates all Cache API entries for that table)
 
 ### Core Modules
 
@@ -90,12 +92,12 @@ The application follows a **schema-first, runtime-introspection** architecture:
 **src/lib/generator.ts** - CRUD router generation
 - Creates OpenAPIHono router with auto-generated endpoints
 - Generates Zod schemas for request/response validation via drizzle-zod
-- Generates fully-typed query parameter schemas based on column metadata for GET, POST, and DELETE
+- Generates fully-typed query parameter schemas based on column metadata for GET, POST, PUT, PATCH, and DELETE
 - `buildQueryParamsSchema()` - Generates GET query params schema with OpenAPI decorators
 - `buildInsertParamsSchema()` - Generates POST query params schema (returning, on_conflict) with OpenAPI decorators
+- `buildUpdateParamsSchema()` - Generates PUT/PATCH query params schema (returning, filters) with OpenAPI decorators
 - `buildDeleteParamsSchema()` - Generates DELETE query params schema (returning, hard_delete, filters) with OpenAPI decorators
-- Implements: GET / (list with filtering/sorting/pagination), POST / (create with upsert support), DELETE / (bulk delete), DELETE /:id (single record)
-- TODO: Add GET /:id, PUT /:id endpoints
+- Implements: GET / (list), POST / (create), PUT / (bulk update), PUT /:id (single update), PATCH / (bulk partial), PATCH /:id (single partial), DELETE / (bulk), DELETE /:id (single)
 
 **src/lib/query-params.ts** - GET query parameter parsing
 - `parseQueryParams()` - Parses query string into structured `ParsedQuery` object
@@ -127,6 +129,18 @@ The application follows a **schema-first, runtime-introspection** architecture:
 - `hasDeleteParams()` - Checks if parsed params have any active configuration
 - `SOFT_DELETE_COLUMNS` - List of column names that indicate soft delete support
 - Reuses `parseFilterKey()` and `coerceValue()` from query-params.ts for filter parsing
+
+**src/lib/update-params.ts** - PUT/PATCH query parameter parsing
+- `parseUpdateParams()` - Parses PUT/PATCH query string into structured `ParsedUpdateParams` object
+- `hasUpdateParams()` - Checks if parsed params have any active configuration
+- Reuses `parseFilterKey()` and `coerceValue()` from query-params.ts for filter parsing
+- Reuses `parseReturningParam()` from insert-params.ts for returning field parsing
+
+**src/lib/update-builder.ts** - Drizzle ORM UPDATE query construction
+- `executeUpdate()` - Main entry point for bulk UPDATE operations with filters
+- `executeUpdateById()` - Convenience function for UPDATE by primary key
+- `validateRequiredFields()` - Validates all required (non-nullable) fields present for PUT operations
+- Reuses `buildWhereClause()` from query-builder.ts and `buildReturningColumns()` from insert-builder.ts
 
 **src/lib/delete-builder.ts** - Drizzle ORM DELETE/UPDATE query construction
 - `executeDelete()` - Main entry point, routes to soft or hard delete based on table schema
@@ -301,6 +315,27 @@ Maps to: `INSERT ... ON CONFLICT (email) DO UPDATE SET name=EXCLUDED.name, updat
 - `200 OK` - Record(s) deleted, body contains deleted records (with RETURNING)
 - `204 No Content` - Delete executed but no RETURNING specified, or no records matched
 - `404 Not Found` - DELETE by ID where record doesn't exist
+
+#### PUT/PATCH Query Parameters (Update)
+
+**Update by ID:**
+- `PUT /api/users/1` - full replacement (requires all non-nullable fields)
+- `PATCH /api/users/1` - partial update (only updates provided fields)
+- `PUT/PATCH /api/users/1?returning=id,name` - update and return specified fields
+
+**Bulk Update with Filters:**
+- `PUT /api/users/?is_active=false` - update all inactive users (full replacement)
+- `PATCH /api/users/?age__gte=18` - partial update all adults
+- All GET filter operators work: `eq`, `gt`, `gte`, `lt`, `lte`, `like`, `ilike`, `in`, `isnull`
+
+**Selective RETURNING:**
+- `?returning=id,name,email` - only return specified fields after UPDATE
+
+**Response Codes:**
+- `200 OK` - Record(s) updated, body contains updated records (with RETURNING)
+- `204 No Content` - Update executed but no RETURNING specified
+- `400 Bad Request` - PUT missing required fields in body
+- `404 Not Found` - PUT/PATCH by ID where record doesn't exist
 
 All query parameters are typed per-table based on introspected column metadata and appear in Swagger UI.
 

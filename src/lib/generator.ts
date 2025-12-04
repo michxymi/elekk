@@ -26,6 +26,12 @@ import {
   type ParsedQuery,
   parseQueryParams,
 } from "@/lib/query-params";
+import {
+  executeUpdate,
+  executeUpdateById,
+  validateRequiredFields,
+} from "@/lib/update-builder";
+import { parseUpdateParams } from "@/lib/update-params";
 import type { Env as AppEnv, ColumnConfig } from "@/types";
 
 type CrudRouterOptions = {
@@ -394,6 +400,39 @@ const buildDeleteParamsSchema = (columns: ColumnConfig[]) => {
       description:
         "Force hard delete (actual row deletion) even if table has a deleted_at column for soft delete. Set to 'true' or '1' to enable.",
       example: "true",
+    });
+
+  return z.object(shape);
+};
+
+/**
+ * Generates a Zod schema for UPDATE query parameters with OpenAPI documentation
+ *
+ * Creates parameters for controlling UPDATE behavior:
+ * - All filter parameters (same as GET) for bulk updates
+ * - returning: Select which fields to return after UPDATE
+ *
+ * @param columns - Array of column configurations from database introspection
+ * @returns Zod schema for UPDATE query parameters with OpenAPI decorators
+ */
+const buildUpdateParamsSchema = (columns: ColumnConfig[]) => {
+  const columnNames = columns.map((c) => c.name).join(",");
+  const shape: Record<string, z.ZodTypeAny> = {};
+
+  // Add all filter parameters (same as GET) for bulk updates
+  for (const column of columns) {
+    addColumnFilters(shape, column);
+  }
+
+  // returning - Select which fields to return after UPDATE
+  shape.returning = z
+    .string()
+    .optional()
+    .openapi({
+      param: { name: "returning", in: "query" },
+      description:
+        "Comma-separated list of fields to return after UPDATE (RETURNING clause)",
+      example: columnNames.slice(0, 50),
     });
 
   return z.object(shape);
@@ -814,6 +853,355 @@ export function createCrudRouter(
       }
 
       // Return 204 No Content if no returning specified or no records deleted
+      return c.body(null, 204);
+    }
+  );
+
+  // PUT /:id (Full replacement of single record by primary key)
+  const updateByIdParamsSchema = z.object({
+    returning: z
+      .string()
+      .optional()
+      .openapi({
+        param: { name: "returning", in: "query" },
+        description:
+          "Comma-separated list of fields to return after UPDATE (RETURNING clause)",
+        example: columns
+          .map((c) => c.name)
+          .join(",")
+          .slice(0, 50),
+      }),
+  });
+
+  app.openapi(
+    createRoute({
+      method: "put",
+      path: "/{id}",
+      tags: [tableName],
+      request: {
+        params: z.object({
+          id: z.string().openapi({
+            param: { name: "id", in: "path" },
+            description: "Record ID to update",
+            example: "1",
+          }),
+        }),
+        query: updateByIdParamsSchema,
+        body: { content: { "application/json": { schema: insertSchema } } },
+      },
+      responses: {
+        200: {
+          content: { "application/json": { schema: selectSchema } },
+          description: "Updated record (with returning)",
+        },
+        204: {
+          description: "Record updated successfully (no returning)",
+        },
+        400: {
+          content: {
+            "application/json": {
+              schema: z.object({
+                error: z.string(),
+                missingFields: z.array(z.string()).optional(),
+              }),
+            },
+          },
+          description: "Missing required fields for full replacement",
+        },
+        404: {
+          content: {
+            "application/json": {
+              schema: z.object({ error: z.string() }),
+            },
+          },
+          description: "Record not found",
+        },
+      },
+    }),
+    async (c) => {
+      const client = postgres(connectionString);
+      const db = drizzle(client);
+      const id = c.req.param("id");
+      const body = await c.req.json();
+
+      // Validate all required fields are present (PUT = full replacement)
+      const validation = validateRequiredFields(
+        body,
+        columns,
+        PRIMARY_KEY_COLUMN
+      );
+      if (!validation.valid) {
+        return c.json(
+          {
+            error: "Missing required fields for full replacement",
+            missingFields: validation.missingFields,
+          },
+          400
+        );
+      }
+
+      // Parse UPDATE query parameters
+      const rawQuery = c.req.query();
+      const updateParams = parseUpdateParams(rawQuery, columns);
+
+      const result = await executeUpdateById(
+        {
+          db,
+          table: table as PgTable,
+          data: body,
+          params: { returning: updateParams.returning },
+        },
+        id,
+        columns,
+        PRIMARY_KEY_COLUMN
+      );
+
+      // Invalidate caches by bumping table version
+      if (options.env?.DATA_CACHE) {
+        await bumpTableVersion(options.env.DATA_CACHE, tableName);
+      }
+
+      // Handle not found case
+      if (result.length === 0) {
+        return c.json({ error: "Record not found" }, 404);
+      }
+
+      // Return 200 with updated record if returning was specified
+      if (updateParams.returning) {
+        return c.json(result[0], 200);
+      }
+
+      // Return 204 No Content if no returning specified
+      return c.body(null, 204);
+    }
+  );
+
+  // PATCH /:id (Partial update of single record by primary key)
+  app.openapi(
+    createRoute({
+      method: "patch",
+      path: "/{id}",
+      tags: [tableName],
+      request: {
+        params: z.object({
+          id: z.string().openapi({
+            param: { name: "id", in: "path" },
+            description: "Record ID to update",
+            example: "1",
+          }),
+        }),
+        query: updateByIdParamsSchema,
+        body: {
+          content: {
+            "application/json": {
+              schema: insertSchema.partial() as unknown as z.ZodTypeAny,
+            },
+          },
+        },
+      },
+      responses: {
+        200: {
+          content: { "application/json": { schema: selectSchema } },
+          description: "Updated record (with returning)",
+        },
+        204: {
+          description: "Record updated successfully (no returning)",
+        },
+        404: {
+          content: {
+            "application/json": {
+              schema: z.object({ error: z.string() }),
+            },
+          },
+          description: "Record not found",
+        },
+      },
+    }),
+    async (c) => {
+      const client = postgres(connectionString);
+      const db = drizzle(client);
+      const id = c.req.param("id");
+      const body = await c.req.json();
+
+      // Parse UPDATE query parameters
+      const rawQuery = c.req.query();
+      const updateParams = parseUpdateParams(rawQuery, columns);
+
+      const result = await executeUpdateById(
+        {
+          db,
+          table: table as PgTable,
+          data: body,
+          params: { returning: updateParams.returning },
+        },
+        id,
+        columns,
+        PRIMARY_KEY_COLUMN
+      );
+
+      // Invalidate caches by bumping table version
+      if (options.env?.DATA_CACHE) {
+        await bumpTableVersion(options.env.DATA_CACHE, tableName);
+      }
+
+      // Handle not found case
+      if (result.length === 0) {
+        return c.json({ error: "Record not found" }, 404);
+      }
+
+      // Return 200 with updated record if returning was specified
+      if (updateParams.returning) {
+        return c.json(result[0], 200);
+      }
+
+      // Return 204 No Content if no returning specified
+      return c.body(null, 204);
+    }
+  );
+
+  // PUT / (Bulk full replacement with filters)
+  const updateParamsSchema = buildUpdateParamsSchema(columns);
+
+  app.openapi(
+    createRoute({
+      method: "put",
+      path: "/",
+      tags: [tableName],
+      request: {
+        query: updateParamsSchema,
+        body: { content: { "application/json": { schema: insertSchema } } },
+      },
+      responses: {
+        200: {
+          content: { "application/json": { schema: z.array(selectSchema) } },
+          description: "Updated records (with returning)",
+        },
+        204: {
+          description:
+            "Records updated successfully (no returning or no records matched)",
+        },
+        400: {
+          content: {
+            "application/json": {
+              schema: z.object({
+                error: z.string(),
+                missingFields: z.array(z.string()).optional(),
+              }),
+            },
+          },
+          description: "Missing required fields for full replacement",
+        },
+      },
+    }),
+    async (c) => {
+      const client = postgres(connectionString);
+      const db = drizzle(client);
+      const body = await c.req.json();
+
+      // Validate all required fields are present (PUT = full replacement)
+      const validation = validateRequiredFields(
+        body,
+        columns,
+        PRIMARY_KEY_COLUMN
+      );
+      if (!validation.valid) {
+        return c.json(
+          {
+            error: "Missing required fields for full replacement",
+            missingFields: validation.missingFields,
+          },
+          400
+        );
+      }
+
+      // Parse UPDATE query parameters
+      const rawQuery = c.req.query();
+      const updateParams = parseUpdateParams(rawQuery, columns);
+
+      const result = await executeUpdate(
+        {
+          db,
+          table: table as PgTable,
+          data: body,
+          params: updateParams,
+        },
+        columns,
+        PRIMARY_KEY_COLUMN
+      );
+
+      // Invalidate caches by bumping table version
+      if (options.env?.DATA_CACHE) {
+        await bumpTableVersion(options.env.DATA_CACHE, tableName);
+      }
+
+      // Return 200 with updated records if returning was explicitly requested
+      if (result.length > 0 && updateParams.returning) {
+        return c.json(result, 200);
+      }
+
+      // Return 204 No Content if no returning specified or no records updated
+      return c.body(null, 204);
+    }
+  );
+
+  // PATCH / (Bulk partial update with filters)
+  app.openapi(
+    createRoute({
+      method: "patch",
+      path: "/",
+      tags: [tableName],
+      request: {
+        query: updateParamsSchema,
+        body: {
+          content: {
+            "application/json": {
+              schema: insertSchema.partial() as unknown as z.ZodTypeAny,
+            },
+          },
+        },
+      },
+      responses: {
+        200: {
+          content: { "application/json": { schema: z.array(selectSchema) } },
+          description: "Updated records (with returning)",
+        },
+        204: {
+          description:
+            "Records updated successfully (no returning or no records matched)",
+        },
+      },
+    }),
+    async (c) => {
+      const client = postgres(connectionString);
+      const db = drizzle(client);
+      const body = await c.req.json();
+
+      // Parse UPDATE query parameters
+      const rawQuery = c.req.query();
+      const updateParams = parseUpdateParams(rawQuery, columns);
+
+      const result = await executeUpdate(
+        {
+          db,
+          table: table as PgTable,
+          data: body,
+          params: updateParams,
+        },
+        columns,
+        PRIMARY_KEY_COLUMN
+      );
+
+      // Invalidate caches by bumping table version
+      if (options.env?.DATA_CACHE) {
+        await bumpTableVersion(options.env.DATA_CACHE, tableName);
+      }
+
+      // Return 200 with updated records if returning was explicitly requested
+      if (result.length > 0 && updateParams.returning) {
+        return c.json(result, 200);
+      }
+
+      // Return 204 No Content if no returning specified or no records updated
       return c.body(null, 204);
     }
   );

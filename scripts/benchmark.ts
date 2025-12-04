@@ -1048,6 +1048,292 @@ async function benchmarkDeleteOperations(): Promise<void> {
 }
 
 /**
+ * Helper: Create a test user for UPDATE benchmarks
+ */
+async function createUpdateTestUser(
+  userData: Record<string, unknown>
+): Promise<{ id: unknown } | null> {
+  const { response } = await timedRequest(`${API_BASE_URL}/api/users/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(userData),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.log(
+      `  ${colors.red}→${colors.reset} Failed to create test user: ${response.status} - ${errorText}`
+    );
+    return null;
+  }
+
+  return (await response.json()) as { id: unknown };
+}
+
+/**
+ * Helper: Benchmark PUT by ID with returning
+ */
+async function benchmarkPutById(
+  userId: unknown,
+  timestamp: number
+): Promise<void> {
+  const { response, duration } = await timedRequest(
+    `${API_BASE_URL}/api/users/${userId}?returning=id,name,email`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: `Updated via PUT ${timestamp}`,
+        email: `updated-put-${timestamp}@example.com`,
+        is_active: false,
+      }),
+    }
+  );
+
+  const ok = response.ok;
+  console.log(
+    `${ok ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} PUT /api/users/${userId}?returning=id,name,email → ${formatDuration(duration, 500)} ${ok ? "✓" : "✗"}`
+  );
+  if (ok) {
+    const updated = (await response.json()) as Record<string, unknown>;
+    console.log(
+      `  ${colors.blue}→${colors.reset} Updated user: ${updated.name}`
+    );
+  }
+  recordBenchmark({
+    name: "PUT: Full replacement by ID with returning",
+    passed: ok,
+    duration,
+    expected: "status 200",
+    actual: `status ${response.status}`,
+    error: ok ? undefined : await response.clone().text(),
+  });
+}
+
+/**
+ * Helper: Benchmark PATCH by ID with returning
+ */
+async function benchmarkPatchById(
+  userId: unknown,
+  timestamp: number
+): Promise<void> {
+  const { response, duration } = await timedRequest(
+    `${API_BASE_URL}/api/users/${userId}?returning=id,name`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: `Updated via PATCH ${timestamp}`,
+      }),
+    }
+  );
+
+  const ok = response.ok;
+  console.log(
+    `${ok ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} PATCH /api/users/${userId}?returning=id,name → ${formatDuration(duration, 500)} ${ok ? "✓" : "✗"}`
+  );
+  if (ok) {
+    const updated = (await response.json()) as Record<string, unknown>;
+    console.log(
+      `  ${colors.blue}→${colors.reset} Updated user: ${updated.name}`
+    );
+  }
+  recordBenchmark({
+    name: "PATCH: Partial update by ID with returning",
+    passed: ok,
+    duration,
+    expected: "status 200",
+    actual: `status ${response.status}`,
+    error: ok ? undefined : await response.clone().text(),
+  });
+}
+
+/**
+ * Helper: Benchmark PATCH by ID without returning
+ */
+async function benchmarkPatchByIdNoReturning(userId: unknown): Promise<void> {
+  const { response, duration } = await timedRequest(
+    `${API_BASE_URL}/api/users/${userId}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ is_active: true }),
+    }
+  );
+
+  const ok = response.status === 204 || response.status === 200;
+  console.log(
+    `${ok ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} PATCH /api/users/${userId} (no returning) → ${formatDuration(duration, 500)} ${ok ? "✓" : "✗"}`
+  );
+  console.log(
+    `  ${colors.blue}→${colors.reset} Returned ${response.status} (no returning param)`
+  );
+  recordBenchmark({
+    name: "PATCH: Partial update by ID without returning",
+    passed: ok,
+    duration,
+    expected: "status 200 or 204",
+    actual: `status ${response.status}`,
+  });
+}
+
+/**
+ * Helper: Benchmark bulk PATCH with filters
+ */
+async function benchmarkBulkPatch(timestamp: number): Promise<void> {
+  await createUpdateTestUser({
+    name: `Bulk Patch User 1 ${timestamp}`,
+    email: `bulk-patch-1-${timestamp}@example.com`,
+    is_active: false,
+  });
+  await createUpdateTestUser({
+    name: `Bulk Patch User 2 ${timestamp}`,
+    email: `bulk-patch-2-${timestamp}@example.com`,
+    is_active: false,
+  });
+
+  const { response, duration } = await timedRequest(
+    `${API_BASE_URL}/api/users/?email__ilike=%bulk-patch-%-${timestamp}%&returning=id,name,is_active`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ is_active: true }),
+    }
+  );
+
+  const ok = response.ok;
+  console.log(
+    `${ok ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} PATCH /api/users/?email__ilike=...&returning=... → ${formatDuration(duration, 500)} ${ok ? "✓" : "✗"}`
+  );
+  if (response.status === 200) {
+    const updated = (await response.json()) as unknown[];
+    console.log(
+      `  ${colors.blue}→${colors.reset} Updated ${updated.length} records`
+    );
+  } else if (response.status === 204) {
+    console.log(
+      `  ${colors.blue}→${colors.reset} Returned 204 No Content (no records matched or no returning)`
+    );
+  }
+  recordBenchmark({
+    name: "PATCH: Bulk partial update with filter",
+    passed: ok,
+    duration,
+    expected: "status 200 or 204",
+    actual: `status ${response.status}`,
+    error: ok ? undefined : await response.clone().text(),
+  });
+}
+
+/**
+ * Helper: Benchmark PUT validation (missing required fields)
+ */
+async function benchmarkPutValidation(userId: unknown): Promise<void> {
+  const { response, duration } = await timedRequest(
+    `${API_BASE_URL}/api/users/${userId}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Only Name" }),
+    }
+  );
+
+  const ok = response.status === 400;
+  console.log(
+    `${ok ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} PUT /api/users/${userId} (missing required fields) → ${formatDuration(duration, 500)} ${ok ? "✓" : "✗"}`
+  );
+  if (ok) {
+    const error = (await response.json()) as Record<string, unknown>;
+    console.log(
+      `  ${colors.blue}→${colors.reset} Returned 400: ${error.error}`
+    );
+  }
+  recordBenchmark({
+    name: "PUT: Missing required fields (400)",
+    passed: ok,
+    duration,
+    expected: "status 400",
+    actual: `status ${response.status}`,
+  });
+}
+
+/**
+ * Helper: Benchmark PATCH not found
+ */
+async function benchmarkPatchNotFound(): Promise<void> {
+  const { response, duration } = await timedRequest(
+    `${API_BASE_URL}/api/users/-999999`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Does Not Exist" }),
+    }
+  );
+
+  const ok = response.status === 404;
+  console.log(
+    `${ok ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} PATCH /api/users/-999999 (not found) → ${formatDuration(duration, 500)} ${ok ? "✓" : "✗"}`
+  );
+  console.log(`  ${colors.blue}→${colors.reset} Returned 404 Not Found`);
+  recordBenchmark({
+    name: "PATCH: Record not found (404)",
+    passed: ok,
+    duration,
+    expected: "status 404",
+    actual: `status ${response.status}`,
+  });
+}
+
+/**
+ * Benchmark: UPDATE (PUT/PATCH) operations
+ */
+async function benchmarkUpdateOperations(): Promise<void> {
+  printSection("UPDATE (PUT/PATCH) OPERATIONS");
+
+  const timestamp = Date.now();
+
+  const user1 = await createUpdateTestUser({
+    name: `Update Test PUT ${timestamp}`,
+    email: `update-put-${timestamp}@example.com`,
+    is_active: true,
+  });
+  const user2 = await createUpdateTestUser({
+    name: `Update Test PATCH ${timestamp}`,
+    email: `update-patch-${timestamp}@example.com`,
+    is_active: true,
+  });
+  const user3 = await createUpdateTestUser({
+    name: `Update Test Bulk ${timestamp}`,
+    email: `update-bulk-${timestamp}@example.com`,
+    is_active: false,
+  });
+
+  if (!(user1 && user2 && user3)) {
+    console.log(
+      `${colors.red}✗${colors.reset} Could not create test users for UPDATE benchmark`
+    );
+    recordBenchmark({
+      name: "UPDATE: Setup failed",
+      passed: false,
+      duration: 0,
+      error: "Could not create test users",
+    });
+    return;
+  }
+
+  await benchmarkPutById(user1.id, timestamp);
+  await benchmarkPatchById(user2.id, timestamp);
+  await benchmarkPatchByIdNoReturning(user3.id);
+  await benchmarkBulkPatch(timestamp);
+  await benchmarkPutValidation(user1.id);
+  await benchmarkPatchNotFound();
+
+  await timedRequest(`${API_BASE_URL}/api/users/?email__ilike=%${timestamp}%`, {
+    method: "DELETE",
+  });
+}
+
+/**
  * Benchmark: Concurrent load
  */
 async function benchmarkConcurrentLoad(): Promise<void> {
@@ -1150,6 +1436,7 @@ async function main(): Promise<void> {
     await benchmarkGetQueryParams();
     await benchmarkPostQueryParams();
     await benchmarkDeleteOperations();
+    await benchmarkUpdateOperations();
     await benchmarkConcurrentLoad();
   } catch (error) {
     console.error(

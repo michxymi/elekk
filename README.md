@@ -38,6 +38,8 @@ src/
     ├── query-builder.ts  # Drizzle ORM SELECT query construction
     ├── insert-params.ts  # POST query parameter parsing (upsert)
     ├── insert-builder.ts # Drizzle ORM INSERT query construction
+    ├── update-params.ts  # PUT/PATCH query parameter parsing
+    ├── update-builder.ts # Drizzle ORM UPDATE query construction
     ├── delete-params.ts  # DELETE query parameter parsing (soft delete)
     ├── delete-builder.ts # Drizzle ORM DELETE/UPDATE query construction
     ├── cache-api.ts      # Cache API utilities (Data Plane)
@@ -316,7 +318,72 @@ curl -X DELETE "http://localhost:8787/api/soft_delete_users/1?hard_delete=true"
 - `204 No Content` - Record(s) deleted but no RETURNING specified, or no records matched filters
 - `404 Not Found` - DELETE by ID where record doesn't exist
 
-### Step 9: Test Schema Drift Detection
+### Step 9: PUT/PATCH Query Parameters (Update)
+
+Elekk supports PUT (full replacement) and PATCH (partial update) operations with SQL-like query parameters:
+
+**PUT - Full Resource Replacement:**
+
+PUT requires all non-nullable fields in the request body (except id):
+
+```bash
+# Update single user (requires all required fields)
+curl -X PUT "http://localhost:8787/api/users/1?returning=id,name,email" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Updated Name","email":"updated@example.com","is_active":true}'
+
+# Returns 400 if required fields are missing
+curl -X PUT "http://localhost:8787/api/users/1" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Only Name"}'  # Missing email, is_active
+# Response: { "error": "Missing required fields for full replacement", "missingFields": ["email", "is_active"] }
+```
+
+**PATCH - Partial Update:**
+
+PATCH only updates the fields provided in the request body:
+
+```bash
+# Update single field
+curl -X PATCH "http://localhost:8787/api/users/1?returning=id,name" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"New Name"}'
+
+# Update multiple fields
+curl -X PATCH "http://localhost:8787/api/users/1" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Updated","is_active":false}'
+```
+
+**Bulk Update with Filters:**
+
+Both PUT and PATCH support bulk updates using filter parameters:
+
+```bash
+# PATCH: Update is_active for all users matching filter
+curl -X PATCH "http://localhost:8787/api/users/?is_active=false&returning=id,name" \
+  -H "Content-Type: application/json" \
+  -d '{"is_active":true}'
+
+# PUT: Full replacement for all users matching filter (requires all fields)
+curl -X PUT "http://localhost:8787/api/users/?name__like=%Test%" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Replaced","email":"replaced@example.com","is_active":true}'
+```
+
+| Query Param | SQL Equivalent | Description |
+|-------------|----------------|-------------|
+| `returning=id,name` | `RETURNING id, name` | Select which fields to return after UPDATE |
+| `<field>=<value>` | `WHERE field = value` | Filter which records to update (bulk) |
+| `<field>__<op>=<value>` | `WHERE field <op> value` | All GET filter operators work (eq, gt, gte, lt, lte, like, ilike, in, isnull) |
+
+**Response Codes:**
+- `200 OK` - Record(s) updated, body contains updated records (with RETURNING)
+- `204 No Content` - Record(s) updated but no RETURNING specified
+- `400 Bad Request` - PUT missing required fields in body
+- `404 Not Found` - PUT/PATCH by ID where record doesn't exist
+
+### Step 10: Test Schema Drift Detection
 
 Modify the database schema and watch Elekk automatically detect changes:
 
@@ -376,7 +443,7 @@ Elekk uses a three-tier caching strategy optimized for Cloudflare Workers:
 - **Memory** caches compiled routers to avoid repeated schema parsing
 
 **Cache Invalidation:**
-- POST/PUT/DELETE operations bump the table version in KV
+- POST/PUT/PATCH/DELETE operations bump the table version in KV
 - New version = new cache URLs = automatic cache miss
 - Old entries expire naturally via TTL (60 seconds)
 
@@ -440,9 +507,11 @@ Deploy read replicas closer to users for global low latency on cache misses:
 5. **Query parsing**
    - GET: extracts filters, sorting, pagination from query parameters
    - POST: extracts returning fields, on_conflict configuration for upserts
+   - PUT/PATCH: extracts filters, returning fields for updates
    - DELETE: extracts filters, returning fields, and detects soft delete columns
 6. **Query execution**
    - GET: builds Drizzle ORM query with WHERE, ORDER BY, LIMIT, OFFSET
    - POST: builds INSERT with optional ON CONFLICT and RETURNING clauses
+   - PUT/PATCH: builds UPDATE with WHERE and RETURNING clauses
    - DELETE: builds DELETE or UPDATE (soft delete) with WHERE and RETURNING
 7. **Caching** with SWR (stale-while-revalidate) pattern for fast responses
