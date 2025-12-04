@@ -326,4 +326,66 @@ describe("createCrudRouter", () => {
       expect(typeof body[0]?.created_at).toBe("string");
     });
   });
+
+  // Note: PUT / endpoint tests with request bodies are complex due to Zod
+  // validation from drizzle-zod + @hono/zod-openapi. The PUT endpoint validates
+  // required fields through validateRequiredFields(), which is unit tested in
+  // update-builder.test.ts. For full PUT endpoint testing, use integration tests
+  // with a real database.
+
+  describe("PATCH / (Bulk Partial Update)", () => {
+    it("should call update method for partial update", async () => {
+      mockDb = createMockDrizzleDb({ updateResult: [] });
+      vi.mocked(drizzle).mockReturnValue(mockDb as never);
+
+      const schema = buildRuntimeSchema(
+        TEST_TABLE_NAMES.USERS,
+        USERS_TABLE_COLUMNS
+      );
+      const router = createCrudRouter(
+        TEST_TABLE_NAMES.USERS,
+        schema.table,
+        TEST_CONNECTION_STRING,
+        { columns: USERS_TABLE_COLUMNS }
+      );
+
+      const req = new Request("http://localhost/?is_active=false", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_active: true }),
+      });
+      const res = await router.fetch(req);
+
+      // PATCH doesn't require all fields, so it should work
+      expect([200, 204]).toContain(res.status);
+      expect(mockDb.update).toHaveBeenCalled();
+    });
+
+    it("should allow updating single field without other required fields", async () => {
+      mockDb = createMockDrizzleDb({ updateResult: [] });
+      vi.mocked(drizzle).mockReturnValue(mockDb as never);
+
+      const schema = buildRuntimeSchema(
+        TEST_TABLE_NAMES.USERS,
+        USERS_TABLE_COLUMNS
+      );
+      const router = createCrudRouter(
+        TEST_TABLE_NAMES.USERS,
+        schema.table,
+        TEST_CONNECTION_STRING,
+        { columns: USERS_TABLE_COLUMNS }
+      );
+
+      const req = new Request("http://localhost/", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Updated Name Only" }),
+      });
+      const res = await router.fetch(req);
+
+      // PATCH should not require all fields
+      expect([200, 204]).toContain(res.status);
+      expect(mockDb.update).toHaveBeenCalled();
+    });
+  });
 });
