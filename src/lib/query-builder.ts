@@ -232,7 +232,7 @@ export type QueryExecutionOptions = {
  *   }
  * });
  */
-export const executeQuery = (
+export const executeQuery = async (
   options: QueryExecutionOptions
 ): Promise<unknown[]> => {
   const { db, table, query } = options;
@@ -270,5 +270,5 @@ export const executeQuery = (
     dbQuery = dbQuery.offset(query.offset);
   }
 
-  return dbQuery;
+  return await dbQuery;
 };
