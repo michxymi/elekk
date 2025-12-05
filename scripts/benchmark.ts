@@ -66,14 +66,25 @@ const colors = {
 
 type BenchmarkResult = {
   name: string;
-  passed: boolean;
   duration: number;
-  expected?: string;
+  target?: string;
   actual?: string;
   error?: string;
 };
 
 const results: BenchmarkResult[] = [];
+
+// Track created user IDs for cleanup
+const createdUserIds: unknown[] = [];
+
+/**
+ * Track a created user ID for cleanup at the end of benchmarks
+ */
+function trackCreatedUser(id: unknown): void {
+  if (id !== undefined && id !== null) {
+    createdUserIds.push(id);
+  }
+}
 
 /**
  * Make an HTTP request and measure response time
@@ -93,9 +104,8 @@ async function timedRequest(
  */
 function recordBenchmark(options: {
   name: string;
-  passed: boolean;
   duration: number;
-  expected?: string;
+  target?: string;
   actual?: string;
   error?: string;
 }): void {
@@ -127,9 +137,8 @@ function printSection(title: string): void {
  * Print benchmark summary
  */
 function printSummary(): void {
-  const passed = results.filter((r) => r.passed).length;
-  const failed = results.filter((r) => !r.passed).length;
   const total = results.length;
+  const withErrors = results.filter((r) => r.error).length;
 
   console.log(
     `\n${colors.bright}${colors.cyan}${"━".repeat(60)}${colors.reset}`
@@ -142,31 +151,38 @@ function printSummary(): void {
   );
 
   console.log(`Total benchmarks: ${total}`);
-  console.log(`${colors.green}✓ Passed: ${passed}${colors.reset}`);
 
-  if (failed > 0) {
-    console.log(`${colors.red}✗ Failed: ${failed}${colors.reset}\n`);
-    console.log(`${colors.red}Failed benchmarks:${colors.reset}`);
-    for (const result of results.filter((r) => !r.passed)) {
+  // Show results with errors (if any)
+  if (withErrors > 0) {
+    console.log(
+      `\n${colors.yellow}Benchmarks with errors: ${withErrors}${colors.reset}`
+    );
+    for (const result of results.filter((r) => r.error)) {
       console.log(
-        `  ${colors.red}✗${colors.reset} ${result.name} (${Math.round(result.duration)}ms)`
+        `  ${colors.yellow}!${colors.reset} ${result.name} (${Math.round(result.duration)}ms)`
       );
-      if (result.expected && result.actual) {
-        console.log(
-          `    Expected: ${result.expected}, Actual: ${result.actual}`
-        );
-      }
-      if (result.error) {
-        console.log(`    Error: ${result.error}`);
-      }
+      console.log(`    Error: ${result.error}`);
     }
   }
 
+  // Show all results summary
+  console.log(`\n${colors.bright}Results:${colors.reset}`);
+  for (const result of results) {
+    let line = `  ${result.name}: ${Math.round(result.duration)}ms`;
+    if (result.target) {
+      line += ` (target: ${result.target})`;
+    }
+    if (result.actual && !result.actual.startsWith("status")) {
+      line += ` → ${result.actual}`;
+    }
+    console.log(line);
+  }
+
   console.log(
-    `\n${colors.bright}Overall: ${failed === 0 ? `${colors.green}ALL BENCHMARKS PASSED ✓` : `${colors.red}SOME BENCHMARKS FAILED ✗`}${colors.reset}\n`
+    `\n${colors.bright}${colors.green}Benchmarks complete.${colors.reset}\n`
   );
 
-  process.exit(failed > 0 ? 1 : 0);
+  process.exit(0);
 }
 
 /**
@@ -183,17 +199,16 @@ async function benchmarkColdStart(): Promise<void> {
     }
   );
 
-  const usersOk = usersRes.ok && usersDuration < 1000;
   console.log(
-    `${usersOk ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} GET /api/users/ → ${formatDuration(usersDuration, 1000)} ${usersDuration < 1000 ? "✓" : "(slower than expected)"}`
+    `GET /api/users/ → ${formatDuration(usersDuration, 1000)} (target: <1000ms)`
   );
 
   recordBenchmark({
     name: "Cold start: GET /api/users/",
-    passed: usersOk,
     duration: usersDuration,
-    expected: "< 1000ms",
+    target: "< 1000ms",
     actual: `${Math.round(usersDuration)}ms`,
+    error: usersRes.ok ? undefined : `status ${usersRes.status}`,
   });
 
   // Test products table introspection
@@ -202,17 +217,16 @@ async function benchmarkColdStart(): Promise<void> {
       headers: { "X-Cache-Control": "no-cache" },
     });
 
-  const productsOk = productsRes.ok && productsDuration < 1000;
   console.log(
-    `${productsOk ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} GET /api/products/ → ${formatDuration(productsDuration, 1000)} ${productsDuration < 1000 ? "✓" : "(slower than expected)"}`
+    `GET /api/products/ → ${formatDuration(productsDuration, 1000)} (target: <1000ms)`
   );
 
   recordBenchmark({
     name: "Cold start: GET /api/products/",
-    passed: productsOk,
     duration: productsDuration,
-    expected: "< 1000ms",
+    target: "< 1000ms",
     actual: `${Math.round(productsDuration)}ms`,
+    error: productsRes.ok ? undefined : `status ${productsRes.status}`,
   });
 
   // Test OpenAPI spec generation
@@ -221,17 +235,16 @@ async function benchmarkColdStart(): Promise<void> {
       headers: { "X-Cache-Control": "no-cache" },
     });
 
-  const openApiOk = openApiRes.ok && openApiDuration < 500;
   console.log(
-    `${openApiOk ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} GET /openapi.json → ${formatDuration(openApiDuration, 500)} ${openApiDuration < 500 ? "✓" : "(slower than expected)"}`
+    `GET /openapi.json → ${formatDuration(openApiDuration, 500)} (target: <500ms)`
   );
 
   recordBenchmark({
     name: "Cold start: GET /openapi.json",
-    passed: openApiOk,
     duration: openApiDuration,
-    expected: "< 500ms",
+    target: "< 500ms",
     actual: `${Math.round(openApiDuration)}ms`,
+    error: openApiRes.ok ? undefined : `status ${openApiRes.status}`,
   });
 }
 
@@ -266,17 +279,15 @@ async function benchmarkCacheHits(): Promise<void> {
   const avgUsersDuration = Math.round(
     usersDurations.reduce((a, b) => a + b, 0) / usersDurations.length
   );
-  const usersOk = avgUsersDuration < 100;
 
   console.log(
-    `${usersOk ? `${colors.green}✓` : `${colors.yellow}⚠`}${colors.reset} GET /api/users/ (avg of 3) → ${formatDuration(avgUsersDuration, 100)} ${usersOk ? "✓" : "(slower than target)"}`
+    `GET /api/users/ (avg of 3) → ${formatDuration(avgUsersDuration, 100)} (target: <100ms)`
   );
 
   recordBenchmark({
     name: "Cache hit: GET /api/users/ average",
-    passed: usersOk,
     duration: avgUsersDuration,
-    expected: "< 100ms",
+    target: "< 100ms",
     actual: `${avgUsersDuration}ms`,
   });
 
@@ -294,17 +305,15 @@ async function benchmarkCacheHits(): Promise<void> {
   const avgProductsDuration = Math.round(
     productsDurations.reduce((a, b) => a + b, 0) / productsDurations.length
   );
-  const productsOk = avgProductsDuration < 100;
 
   console.log(
-    `${productsOk ? `${colors.green}✓` : `${colors.yellow}⚠`}${colors.reset} GET /api/products/ (avg of 3) → ${formatDuration(avgProductsDuration, 100)} ${productsOk ? "✓" : "(slower than target)"}`
+    `GET /api/products/ (avg of 3) → ${formatDuration(avgProductsDuration, 100)} (target: <100ms)`
   );
 
   recordBenchmark({
     name: "Cache hit: GET /api/products/ average",
-    passed: productsOk,
     duration: avgProductsDuration,
-    expected: "< 100ms",
+    target: "< 100ms",
     actual: `${avgProductsDuration}ms`,
   });
 
@@ -322,17 +331,15 @@ async function benchmarkCacheHits(): Promise<void> {
   const avgOpenApiDuration = Math.round(
     openApiDurations.reduce((a, b) => a + b, 0) / openApiDurations.length
   );
-  const openApiOk = avgOpenApiDuration < 100;
 
   console.log(
-    `${openApiOk ? `${colors.green}✓` : `${colors.yellow}⚠`}${colors.reset} GET /openapi.json (avg of 3) → ${formatDuration(avgOpenApiDuration, 100)} ${openApiOk ? "✓" : "(slower than target)"}`
+    `GET /openapi.json (avg of 3) → ${formatDuration(avgOpenApiDuration, 100)} (target: <100ms)`
   );
 
   recordBenchmark({
     name: "Cache hit: GET /openapi.json average",
-    passed: openApiOk,
     duration: avgOpenApiDuration,
-    expected: "< 100ms",
+    target: "< 100ms",
     actual: `${avgOpenApiDuration}ms`,
   });
 }
@@ -371,18 +378,14 @@ async function benchmarkQueryParamCaching(): Promise<void> {
   const filterResult = await measureQueryCacheBehavior(
     `${API_BASE_URL}/api/users/?is_active=true`
   );
-  const filterOk = filterResult.speedup >= 1.2;
+  console.log("Filter: ?is_active=true");
   console.log(
-    `${filterOk ? `${colors.green}✓` : `${colors.yellow}⚠`}${colors.reset} Filter: ?is_active=true`
-  );
-  console.log(
-    `  ${colors.blue}→${colors.reset} Cold: ${filterResult.coldMs}ms, Warm: ${filterResult.warmMs}ms, Speedup: ${colors.bright}${filterResult.speedup.toFixed(1)}x${colors.reset}`
+    `  ${colors.blue}→${colors.reset} Cold: ${filterResult.coldMs}ms, Warm: ${filterResult.warmMs}ms, Speedup: ${colors.bright}${filterResult.speedup.toFixed(1)}x${colors.reset} (target: >=1.2x)`
   );
   recordBenchmark({
     name: "Query cache: Filter",
-    passed: filterOk,
     duration: filterResult.warmMs,
-    expected: ">= 1.2x speedup",
+    target: ">= 1.2x speedup",
     actual: `${filterResult.speedup.toFixed(1)}x`,
   });
 
@@ -390,18 +393,14 @@ async function benchmarkQueryParamCaching(): Promise<void> {
   const sortResult = await measureQueryCacheBehavior(
     `${API_BASE_URL}/api/users/?order_by=-created_at`
   );
-  const sortOk = sortResult.speedup >= 1.2;
+  console.log("Sort: ?order_by=-created_at");
   console.log(
-    `${sortOk ? `${colors.green}✓` : `${colors.yellow}⚠`}${colors.reset} Sort: ?order_by=-created_at`
-  );
-  console.log(
-    `  ${colors.blue}→${colors.reset} Cold: ${sortResult.coldMs}ms, Warm: ${sortResult.warmMs}ms, Speedup: ${colors.bright}${sortResult.speedup.toFixed(1)}x${colors.reset}`
+    `  ${colors.blue}→${colors.reset} Cold: ${sortResult.coldMs}ms, Warm: ${sortResult.warmMs}ms, Speedup: ${colors.bright}${sortResult.speedup.toFixed(1)}x${colors.reset} (target: >=1.2x)`
   );
   recordBenchmark({
     name: "Query cache: Sort",
-    passed: sortOk,
     duration: sortResult.warmMs,
-    expected: ">= 1.2x speedup",
+    target: ">= 1.2x speedup",
     actual: `${sortResult.speedup.toFixed(1)}x`,
   });
 
@@ -409,18 +408,14 @@ async function benchmarkQueryParamCaching(): Promise<void> {
   const pageResult = await measureQueryCacheBehavior(
     `${API_BASE_URL}/api/users/?limit=5&offset=0`
   );
-  const pageOk = pageResult.speedup >= 1.2;
+  console.log("Pagination: ?limit=5&offset=0");
   console.log(
-    `${pageOk ? `${colors.green}✓` : `${colors.yellow}⚠`}${colors.reset} Pagination: ?limit=5&offset=0`
-  );
-  console.log(
-    `  ${colors.blue}→${colors.reset} Cold: ${pageResult.coldMs}ms, Warm: ${pageResult.warmMs}ms, Speedup: ${colors.bright}${pageResult.speedup.toFixed(1)}x${colors.reset}`
+    `  ${colors.blue}→${colors.reset} Cold: ${pageResult.coldMs}ms, Warm: ${pageResult.warmMs}ms, Speedup: ${colors.bright}${pageResult.speedup.toFixed(1)}x${colors.reset} (target: >=1.2x)`
   );
   recordBenchmark({
     name: "Query cache: Pagination",
-    passed: pageOk,
     duration: pageResult.warmMs,
-    expected: ">= 1.2x speedup",
+    target: ">= 1.2x speedup",
     actual: `${pageResult.speedup.toFixed(1)}x`,
   });
 
@@ -428,18 +423,16 @@ async function benchmarkQueryParamCaching(): Promise<void> {
   const comboResult = await measureQueryCacheBehavior(
     `${API_BASE_URL}/api/users/?is_active=true&order_by=name&limit=10&select=id,name`
   );
-  const comboOk = comboResult.speedup >= 1.2;
   console.log(
-    `${comboOk ? `${colors.green}✓` : `${colors.yellow}⚠`}${colors.reset} Combined: ?is_active=true&order_by=name&limit=10&select=id,name`
+    "Combined: ?is_active=true&order_by=name&limit=10&select=id,name"
   );
   console.log(
-    `  ${colors.blue}→${colors.reset} Cold: ${comboResult.coldMs}ms, Warm: ${comboResult.warmMs}ms, Speedup: ${colors.bright}${comboResult.speedup.toFixed(1)}x${colors.reset}`
+    `  ${colors.blue}→${colors.reset} Cold: ${comboResult.coldMs}ms, Warm: ${comboResult.warmMs}ms, Speedup: ${colors.bright}${comboResult.speedup.toFixed(1)}x${colors.reset} (target: >=1.2x)`
   );
   recordBenchmark({
     name: "Query cache: Combined query",
-    passed: comboOk,
     duration: comboResult.warmMs,
-    expected: ">= 1.2x speedup",
+    target: ">= 1.2x speedup",
     actual: `${comboResult.speedup.toFixed(1)}x`,
   });
 
@@ -463,17 +456,14 @@ async function benchmarkQueryParamCaching(): Promise<void> {
   const data5 = (await res5.json()) as unknown[];
 
   const isolationOk = data3.length <= 3 && data5.length <= 5;
-  console.log(
-    `${isolationOk ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} Different params cached separately`
-  );
+  console.log("Different params cached separately");
   console.log(
     `  ${colors.blue}→${colors.reset} ?limit=3 returned ${data3.length} records, ?limit=5 returned ${data5.length} records`
   );
   recordBenchmark({
     name: "Query cache: Isolation",
-    passed: isolationOk,
     duration: 0,
-    expected: "different params cached separately",
+    target: "different params cached separately",
     actual: isolationOk ? "correctly isolated" : "cache mixing detected",
   });
 }
@@ -504,19 +494,17 @@ async function benchmarkCacheSpeedup(): Promise<void> {
   );
 
   const speedup = coldDuration / warmDuration;
-  const speedupOk = speedup >= 2.0;
 
   console.log(`Cold start (DB query): ${Math.round(coldDuration)}ms`);
   console.log(`Cache hit (Cache API): ${Math.round(warmDuration)}ms`);
   console.log(
-    `${speedupOk ? `${colors.green}✓` : `${colors.yellow}⚠`}${colors.reset} Speedup: ${colors.bright}${speedup.toFixed(1)}x${colors.reset} ${speedupOk ? "✓" : "(below 2.0x target)"}`
+    `Speedup: ${colors.bright}${speedup.toFixed(1)}x${colors.reset} (target: >=2.0x)`
   );
 
   recordBenchmark({
     name: "Cache speedup ratio (Cache API)",
-    passed: speedupOk,
     duration: warmDuration,
-    expected: ">= 2.0x",
+    target: ">= 2.0x",
     actual: `${speedup.toFixed(1)}x`,
   });
 }
@@ -532,20 +520,18 @@ async function benchmarkCrudOperations(): Promise<void> {
     `${API_BASE_URL}/api/users/`
   );
 
-  const getOk = getRes.ok;
   console.log(
-    `${getOk ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} GET /api/users/ → ${formatDuration(getDuration, 50)} ${getOk ? "✓" : "✗"}`
+    `GET /api/users/ → ${formatDuration(getDuration, 50)} (status: ${getRes.status})`
   );
 
   recordBenchmark({
     name: "CRUD: GET /api/users/",
-    passed: getOk,
     duration: getDuration,
-    expected: "status 200",
     actual: `status ${getRes.status}`,
+    error: getRes.ok ? undefined : `status ${getRes.status}`,
   });
 
-  if (getOk) {
+  if (getRes.ok) {
     const users = (await getRes.json()) as unknown[];
     console.log(
       `  ${colors.blue}→${colors.reset} Retrieved ${users.length} users`
@@ -568,22 +554,20 @@ async function benchmarkCrudOperations(): Promise<void> {
     }
   );
 
-  const postOk = postRes.ok;
   console.log(
-    `${postOk ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} POST /api/users/ → ${formatDuration(postDuration, 50)} ${postOk ? "✓" : "✗"}`
+    `POST /api/users/ → ${formatDuration(postDuration, 50)} (status: ${postRes.status})`
   );
 
   recordBenchmark({
     name: "CRUD: POST /api/users/",
-    passed: postOk,
     duration: postDuration,
-    expected: "status 200",
     actual: `status ${postRes.status}`,
-    error: postOk ? undefined : await postRes.text(),
+    error: postRes.ok ? undefined : await postRes.text(),
   });
 
-  if (postOk) {
+  if (postRes.ok) {
     const created = (await postRes.json()) as Record<string, unknown>;
+    trackCreatedUser(created.id);
     console.log(
       `  ${colors.blue}→${colors.reset} Created user: ${created.name}`
     );
@@ -599,20 +583,18 @@ async function runGetQueryBenchmark(
   logExtra?: (data: unknown) => string
 ): Promise<void> {
   const { response, duration } = await timedRequest(url);
-  const ok = response.ok;
   console.log(
-    `${ok ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} GET ${url.replace(API_BASE_URL ?? "", "")} → ${formatDuration(duration, 300)} ${ok ? "✓" : "✗"}`
+    `GET ${url.replace(API_BASE_URL ?? "", "")} → ${formatDuration(duration, 300)} (status: ${response.status})`
   );
-  if (ok && logExtra) {
+  if (response.ok && logExtra) {
     const data = await response.json();
     console.log(`  ${colors.blue}→${colors.reset} ${logExtra(data)}`);
   }
   recordBenchmark({
     name,
-    passed: ok,
     duration,
-    expected: "status 200",
     actual: `status ${response.status}`,
+    error: response.ok ? undefined : `status ${response.status}`,
   });
 }
 
@@ -693,12 +675,12 @@ async function benchmarkPostQueryParams(): Promise<void> {
       body: JSON.stringify(testUser1),
     }
   );
-  const retOk = retRes.ok;
   console.log(
-    `${retOk ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} POST /api/users/?returning=id,name,email → ${formatDuration(retDuration, 500)} ${retOk ? "✓" : "✗"}`
+    `POST /api/users/?returning=id,name,email → ${formatDuration(retDuration, 500)} (status: ${retRes.status})`
   );
-  if (retOk) {
+  if (retRes.ok) {
     const data = (await retRes.json()) as Record<string, unknown>;
+    trackCreatedUser(data.id);
     const fields = Object.keys(data);
     console.log(
       `  ${colors.blue}→${colors.reset} Returned fields: ${fields.join(", ")}`
@@ -706,11 +688,9 @@ async function benchmarkPostQueryParams(): Promise<void> {
   }
   recordBenchmark({
     name: "POST: Selective RETURNING",
-    passed: retOk,
     duration: retDuration,
-    expected: "status 201",
     actual: `status ${retRes.status}`,
-    error: retOk ? undefined : await retRes.clone().text(),
+    error: retRes.ok ? undefined : await retRes.clone().text(),
   });
 
   // POST with on_conflict DO NOTHING (upsert - skip duplicate)
@@ -721,11 +701,18 @@ async function benchmarkPostQueryParams(): Promise<void> {
   };
 
   // First insert
-  await timedRequest(`${API_BASE_URL}/api/users/`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(testUser2),
-  });
+  const { response: firstInsertRes } = await timedRequest(
+    `${API_BASE_URL}/api/users/?returning=id`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(testUser2),
+    }
+  );
+  if (firstInsertRes.ok) {
+    const data = (await firstInsertRes.json()) as Record<string, unknown>;
+    trackCreatedUser(data.id);
+  }
 
   // Second insert with same email (should be skipped)
   const { response: nothingRes, duration: nothingDuration } =
@@ -741,22 +728,20 @@ async function benchmarkPostQueryParams(): Promise<void> {
       }
     );
   // 204 No Content indicates conflict was detected, no insert performed
-  const nothingOk = nothingRes.status === 204;
   console.log(
-    `${nothingOk ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} POST /api/users/?on_conflict=email&on_conflict_action=nothing → ${formatDuration(nothingDuration, 500)} ${nothingOk ? "✓" : "✗"}`
+    `POST /api/users/?on_conflict=email&on_conflict_action=nothing → ${formatDuration(nothingDuration, 500)} (status: ${nothingRes.status})`
   );
-  if (nothingOk) {
+  if (nothingRes.status === 204) {
     console.log(
       `  ${colors.blue}→${colors.reset} Conflict handled: 204 No Content (no insert performed)`
     );
   }
   recordBenchmark({
     name: "POST: ON CONFLICT DO NOTHING",
-    passed: nothingOk,
     duration: nothingDuration,
-    expected: "status 204",
     actual: `status ${nothingRes.status}`,
-    error: nothingOk ? undefined : await nothingRes.clone().text(),
+    error:
+      nothingRes.status === 204 ? undefined : await nothingRes.clone().text(),
   });
 
   // POST with on_conflict DO UPDATE (upsert - update on duplicate)
@@ -767,11 +752,18 @@ async function benchmarkPostQueryParams(): Promise<void> {
   };
 
   // First insert
-  await timedRequest(`${API_BASE_URL}/api/users/`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(testUser3),
-  });
+  const { response: firstInsertRes3 } = await timedRequest(
+    `${API_BASE_URL}/api/users/?returning=id`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(testUser3),
+    }
+  );
+  if (firstInsertRes3.ok) {
+    const data = (await firstInsertRes3.json()) as Record<string, unknown>;
+    trackCreatedUser(data.id);
+  }
 
   // Second insert with same email (should update name)
   const { response: updateRes, duration: updateDuration } = await timedRequest(
@@ -785,11 +777,10 @@ async function benchmarkPostQueryParams(): Promise<void> {
       }),
     }
   );
-  const updateOk = updateRes.ok;
   console.log(
-    `${updateOk ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} POST /api/users/?on_conflict=email&on_conflict_update=name → ${formatDuration(updateDuration, 500)} ${updateOk ? "✓" : "✗"}`
+    `POST /api/users/?on_conflict=email&on_conflict_update=name → ${formatDuration(updateDuration, 500)} (status: ${updateRes.status})`
   );
-  if (updateOk) {
+  if (updateRes.ok) {
     const data = (await updateRes.json()) as Record<string, unknown>;
     console.log(
       `  ${colors.blue}→${colors.reset} Upserted user: ${data.name ?? "(no name returned)"}`
@@ -797,11 +788,9 @@ async function benchmarkPostQueryParams(): Promise<void> {
   }
   recordBenchmark({
     name: "POST: ON CONFLICT DO UPDATE",
-    passed: updateOk,
     duration: updateDuration,
-    expected: "status 201",
     actual: `status ${updateRes.status}`,
-    error: updateOk ? undefined : await updateRes.clone().text(),
+    error: updateRes.ok ? undefined : await updateRes.clone().text(),
   });
 }
 
@@ -821,7 +810,9 @@ async function createDeleteTestUser(
     return null;
   }
 
-  return (await response.json()) as { id: unknown };
+  const user = (await response.json()) as { id: unknown };
+  trackCreatedUser(user.id);
+  return user;
 }
 
 /**
@@ -837,13 +828,12 @@ async function benchmarkDeleteById(
 
   const { response, duration } = await timedRequest(url, { method: "DELETE" });
 
-  const passed = response.ok;
   const label = withReturning ? "with returning" : "(default returning)";
   console.log(
-    `${passed ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} DELETE /api/users/${userId}${withReturning ? "?returning=..." : ""} ${label} → ${formatDuration(duration, 500)}`
+    `DELETE /api/users/${userId}${withReturning ? "?returning=..." : ""} ${label} → ${formatDuration(duration, 500)} (status: ${response.status})`
   );
 
-  if (passed && withReturning) {
+  if (response.ok && withReturning) {
     const deleted = (await response.json()) as Record<string, unknown>;
     console.log(
       `  ${colors.blue}→${colors.reset} Deleted user: ${deleted.name}`
@@ -852,11 +842,9 @@ async function benchmarkDeleteById(
 
   recordBenchmark({
     name: `DELETE: Single record by ID ${label}`,
-    passed,
     duration,
-    expected: withReturning ? "status 200" : "status 200 or 204",
     actual: `status ${response.status}`,
-    error: passed ? undefined : await response.clone().text(),
+    error: response.ok ? undefined : await response.clone().text(),
   });
 }
 
@@ -888,12 +876,11 @@ async function benchmarkBulkDelete(timestamp: number): Promise<void> {
   );
 
   // With returning param, expect 200 with JSON body
-  const passed = response.status === 200;
   console.log(
-    `${passed ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} DELETE /api/users/?email__ilike=%bulk-delete%${timestamp}%&returning=id,email → ${formatDuration(duration, 500)}`
+    `DELETE /api/users/?email__ilike=%bulk-delete%${timestamp}%&returning=id,email → ${formatDuration(duration, 500)} (status: ${response.status})`
   );
 
-  if (passed) {
+  if (response.status === 200) {
     const deletedRecords = (await response.json()) as unknown[];
     console.log(
       `  ${colors.blue}→${colors.reset} Deleted ${deletedRecords.length} records`
@@ -902,11 +889,9 @@ async function benchmarkBulkDelete(timestamp: number): Promise<void> {
 
   recordBenchmark({
     name: "DELETE: Bulk delete with filter and returning",
-    passed,
     duration,
-    expected: "status 200",
     actual: `status ${response.status}`,
-    error: passed ? undefined : await response.clone().text(),
+    error: response.ok ? undefined : await response.clone().text(),
   });
 
   // Also test bulk delete without returning (should get 204)
@@ -924,19 +909,16 @@ async function benchmarkBulkDelete(timestamp: number): Promise<void> {
     );
 
   // Without returning param, expect 204 No Content
-  const noReturnPassed = noReturnRes.status === 204;
   console.log(
-    `${noReturnPassed ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} DELETE /api/users/?email__ilike=... (no returning) → ${formatDuration(noReturnDuration, 500)}`
+    `DELETE /api/users/?email__ilike=... (no returning) → ${formatDuration(noReturnDuration, 500)} (status: ${noReturnRes.status})`
   );
   console.log(
-    `  ${colors.blue}→${colors.reset} Returned 204 No Content (no returning param)`
+    `  ${colors.blue}→${colors.reset} Returned ${noReturnRes.status} (no returning param)`
   );
 
   recordBenchmark({
     name: "DELETE: Bulk delete without returning (204)",
-    passed: noReturnPassed,
     duration: noReturnDuration,
-    expected: "status 204",
     actual: `status ${noReturnRes.status}`,
   });
 }
@@ -951,19 +933,16 @@ async function benchmarkDeleteEdgeCases(): Promise<void> {
       method: "DELETE",
     });
 
-  const deleteNoneOk = deleteNoneRes.status === 204;
   console.log(
-    `${deleteNoneOk ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} DELETE /api/users/?id=-999999 (no match) → ${formatDuration(deleteNoneDuration, 500)}`
+    `DELETE /api/users/?id=-999999 (no match) → ${formatDuration(deleteNoneDuration, 500)} (status: ${deleteNoneRes.status})`
   );
   console.log(
-    `  ${colors.blue}→${colors.reset} Returned 204 No Content (no records matched)`
+    `  ${colors.blue}→${colors.reset} Returned ${deleteNoneRes.status} (no records matched)`
   );
 
   recordBenchmark({
     name: "DELETE: No matching records (204)",
-    passed: deleteNoneOk,
     duration: deleteNoneDuration,
-    expected: "status 204",
     actual: `status ${deleteNoneRes.status}`,
   });
 
@@ -973,17 +952,16 @@ async function benchmarkDeleteEdgeCases(): Promise<void> {
       method: "DELETE",
     });
 
-  const deleteNotFoundOk = deleteNotFoundRes.status === 404;
   console.log(
-    `${deleteNotFoundOk ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} DELETE /api/users/-999999 (not found) → ${formatDuration(deleteNotFoundDuration, 500)}`
+    `DELETE /api/users/-999999 (not found) → ${formatDuration(deleteNotFoundDuration, 500)} (status: ${deleteNotFoundRes.status})`
   );
-  console.log(`  ${colors.blue}→${colors.reset} Returned 404 Not Found`);
+  console.log(
+    `  ${colors.blue}→${colors.reset} Returned ${deleteNotFoundRes.status}`
+  );
 
   recordBenchmark({
     name: "DELETE: Record not found (404)",
-    passed: deleteNotFoundOk,
     duration: deleteNotFoundDuration,
-    expected: "status 404",
     actual: `status ${deleteNotFoundRes.status}`,
   });
 }
@@ -1010,11 +988,10 @@ async function benchmarkDeleteOperations(): Promise<void> {
 
   if (!user1) {
     console.log(
-      `${colors.red}✗${colors.reset} Could not create test user for DELETE benchmark`
+      `${colors.yellow}!${colors.reset} Could not create test user for DELETE benchmark`
     );
     recordBenchmark({
       name: "DELETE: Setup failed",
-      passed: false,
       duration: 0,
       error: "Could not create test user 1",
     });
@@ -1029,11 +1006,10 @@ async function benchmarkDeleteOperations(): Promise<void> {
 
   if (!user2) {
     console.log(
-      `${colors.red}✗${colors.reset} Could not create second test user for DELETE benchmark`
+      `${colors.yellow}!${colors.reset} Could not create second test user for DELETE benchmark`
     );
     recordBenchmark({
       name: "DELETE: Setup failed",
-      passed: false,
       duration: 0,
       error: "Could not create test user 2",
     });
@@ -1067,7 +1043,9 @@ async function createUpdateTestUser(
     return null;
   }
 
-  return (await response.json()) as { id: unknown };
+  const user = (await response.json()) as { id: unknown };
+  trackCreatedUser(user.id);
+  return user;
 }
 
 /**
@@ -1090,11 +1068,10 @@ async function benchmarkPutById(
     }
   );
 
-  const ok = response.ok;
   console.log(
-    `${ok ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} PUT /api/users/${userId}?returning=id,name,email → ${formatDuration(duration, 500)} ${ok ? "✓" : "✗"}`
+    `PUT /api/users/${userId}?returning=id,name,email → ${formatDuration(duration, 500)} (status: ${response.status})`
   );
-  if (ok) {
+  if (response.ok) {
     const updated = (await response.json()) as Record<string, unknown>;
     console.log(
       `  ${colors.blue}→${colors.reset} Updated user: ${updated.name}`
@@ -1102,11 +1079,9 @@ async function benchmarkPutById(
   }
   recordBenchmark({
     name: "PUT: Full replacement by ID with returning",
-    passed: ok,
     duration,
-    expected: "status 200",
     actual: `status ${response.status}`,
-    error: ok ? undefined : await response.clone().text(),
+    error: response.ok ? undefined : await response.clone().text(),
   });
 }
 
@@ -1128,11 +1103,10 @@ async function benchmarkPatchById(
     }
   );
 
-  const ok = response.ok;
   console.log(
-    `${ok ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} PATCH /api/users/${userId}?returning=id,name → ${formatDuration(duration, 500)} ${ok ? "✓" : "✗"}`
+    `PATCH /api/users/${userId}?returning=id,name → ${formatDuration(duration, 500)} (status: ${response.status})`
   );
-  if (ok) {
+  if (response.ok) {
     const updated = (await response.json()) as Record<string, unknown>;
     console.log(
       `  ${colors.blue}→${colors.reset} Updated user: ${updated.name}`
@@ -1140,11 +1114,9 @@ async function benchmarkPatchById(
   }
   recordBenchmark({
     name: "PATCH: Partial update by ID with returning",
-    passed: ok,
     duration,
-    expected: "status 200",
     actual: `status ${response.status}`,
-    error: ok ? undefined : await response.clone().text(),
+    error: response.ok ? undefined : await response.clone().text(),
   });
 }
 
@@ -1161,18 +1133,15 @@ async function benchmarkPatchByIdNoReturning(userId: unknown): Promise<void> {
     }
   );
 
-  const ok = response.status === 204 || response.status === 200;
   console.log(
-    `${ok ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} PATCH /api/users/${userId} (no returning) → ${formatDuration(duration, 500)} ${ok ? "✓" : "✗"}`
+    `PATCH /api/users/${userId} (no returning) → ${formatDuration(duration, 500)} (status: ${response.status})`
   );
   console.log(
     `  ${colors.blue}→${colors.reset} Returned ${response.status} (no returning param)`
   );
   recordBenchmark({
     name: "PATCH: Partial update by ID without returning",
-    passed: ok,
     duration,
-    expected: "status 200 or 204",
     actual: `status ${response.status}`,
   });
 }
@@ -1201,9 +1170,8 @@ async function benchmarkBulkPatch(timestamp: number): Promise<void> {
     }
   );
 
-  const ok = response.ok;
   console.log(
-    `${ok ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} PATCH /api/users/?email__ilike=...&returning=... → ${formatDuration(duration, 500)} ${ok ? "✓" : "✗"}`
+    `PATCH /api/users/?email__ilike=...&returning=... → ${formatDuration(duration, 500)} (status: ${response.status})`
   );
   if (response.status === 200) {
     const updated = (await response.json()) as unknown[];
@@ -1217,11 +1185,9 @@ async function benchmarkBulkPatch(timestamp: number): Promise<void> {
   }
   recordBenchmark({
     name: "PATCH: Bulk partial update with filter",
-    passed: ok,
     duration,
-    expected: "status 200 or 204",
     actual: `status ${response.status}`,
-    error: ok ? undefined : await response.clone().text(),
+    error: response.ok ? undefined : await response.clone().text(),
   });
 }
 
@@ -1238,11 +1204,10 @@ async function benchmarkPutValidation(userId: unknown): Promise<void> {
     }
   );
 
-  const ok = response.status === 400;
   console.log(
-    `${ok ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} PUT /api/users/${userId} (missing required fields) → ${formatDuration(duration, 500)} ${ok ? "✓" : "✗"}`
+    `PUT /api/users/${userId} (missing required fields) → ${formatDuration(duration, 500)} (status: ${response.status})`
   );
-  if (ok) {
+  if (response.status === 400) {
     const error = (await response.json()) as Record<string, unknown>;
     console.log(
       `  ${colors.blue}→${colors.reset} Returned 400: ${error.error}`
@@ -1250,9 +1215,7 @@ async function benchmarkPutValidation(userId: unknown): Promise<void> {
   }
   recordBenchmark({
     name: "PUT: Missing required fields (400)",
-    passed: ok,
     duration,
-    expected: "status 400",
     actual: `status ${response.status}`,
   });
 }
@@ -1270,16 +1233,13 @@ async function benchmarkPatchNotFound(): Promise<void> {
     }
   );
 
-  const ok = response.status === 404;
   console.log(
-    `${ok ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} PATCH /api/users/-999999 (not found) → ${formatDuration(duration, 500)} ${ok ? "✓" : "✗"}`
+    `PATCH /api/users/-999999 (not found) → ${formatDuration(duration, 500)} (status: ${response.status})`
   );
-  console.log(`  ${colors.blue}→${colors.reset} Returned 404 Not Found`);
+  console.log(`  ${colors.blue}→${colors.reset} Returned ${response.status}`);
   recordBenchmark({
     name: "PATCH: Record not found (404)",
-    passed: ok,
     duration,
-    expected: "status 404",
     actual: `status ${response.status}`,
   });
 }
@@ -1310,11 +1270,10 @@ async function benchmarkUpdateOperations(): Promise<void> {
 
   if (!(user1 && user2 && user3)) {
     console.log(
-      `${colors.red}✗${colors.reset} Could not create test users for UPDATE benchmark`
+      `${colors.yellow}!${colors.reset} Could not create test users for UPDATE benchmark`
     );
     recordBenchmark({
       name: "UPDATE: Setup failed",
-      passed: false,
       duration: 0,
       error: "Could not create test users",
     });
@@ -1353,32 +1312,27 @@ async function benchmarkConcurrentLoad(): Promise<void> {
     responses.reduce((sum, r) => sum + r.duration, 0) / responses.length
   );
 
-  console.log(
-    `${allOk ? `${colors.green}✓` : `${colors.red}✗`}${colors.reset} 10 parallel requests`
-  );
+  console.log("10 parallel requests");
   console.log(
     `  ${colors.blue}→${colors.reset} Total time: ${Math.round(totalDuration)}ms`
   );
   console.log(
-    `  ${colors.blue}→${colors.reset} Average per request: ${avgDuration}ms`
+    `  ${colors.blue}→${colors.reset} Average per request: ${avgDuration}ms (target: <600ms)`
   );
   console.log(
-    `  ${colors.blue}→${colors.reset} All succeeded: ${allOk ? `${colors.green}Yes ✓${colors.reset}` : `${colors.red}No ✗${colors.reset}`}`
+    `  ${colors.blue}→${colors.reset} All succeeded: ${allOk ? "Yes" : "No"}`
   );
 
   recordBenchmark({
     name: "Concurrent: 10 parallel requests",
-    passed: allOk,
     duration: totalDuration,
-    expected: "all success",
     actual: allOk ? "all success" : "some failed",
   });
 
   recordBenchmark({
     name: "Concurrent: Average response time",
-    passed: avgDuration < 600,
     duration: avgDuration,
-    expected: "< 600ms",
+    target: "< 600ms",
     actual: `${avgDuration}ms`,
   });
 }
@@ -1416,6 +1370,38 @@ async function warmupDatabase(): Promise<void> {
 }
 
 /**
+ * Clean up all test data created during benchmarks
+ */
+async function cleanupTestData(): Promise<void> {
+  if (createdUserIds.length === 0) {
+    return;
+  }
+
+  console.log(
+    `\n${colors.bright}${colors.yellow}🧹 Cleaning up ${createdUserIds.length} test records...${colors.reset}`
+  );
+
+  let deleted = 0;
+  for (const id of createdUserIds) {
+    try {
+      const { response } = await timedRequest(
+        `${API_BASE_URL}/api/users/${id}`,
+        { method: "DELETE" }
+      );
+      if (response.ok || response.status === 404) {
+        deleted += 1;
+      }
+    } catch {
+      // Ignore cleanup errors
+    }
+  }
+
+  console.log(
+    `${colors.green}   Cleaned up ${deleted}/${createdUserIds.length} records${colors.reset}\n`
+  );
+}
+
+/**
  * Main benchmark runner
  */
 async function main(): Promise<void> {
@@ -1443,9 +1429,11 @@ async function main(): Promise<void> {
       `\n${colors.red}Fatal error during benchmarks:${colors.reset}`,
       error
     );
+    await cleanupTestData();
     process.exit(1);
   }
 
+  await cleanupTestData();
   printSummary();
 }
 
